@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="robots" content="noindex, nofollow"/>
+  <title>Vedantu MT AI Interview — Admin</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link rel="stylesheet" href="admin.css"/>
+</head>
+<body>
+
+<div class="bg-orbs" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<!-- ── Login ─────────────────────────────────────────────────────────────── -->
+<div id="login-screen" class="login-wrap hidden">
+  <div class="login-card">
+    <h2>Admin Login</h2>
+    <p class="login-sub">Sign in to view completed interview results.</p>
+    <form id="login-form">
+      <div class="form-group">
+        <label for="admin-password">Password</label>
+        <input type="password" id="admin-password" autocomplete="current-password" autofocus/>
+      </div>
+      <button type="submit" id="login-btn" class="btn-primary">Sign In</button>
+      <p id="login-error" class="login-error"></p>
+    </form>
+  </div>
+</div>
+
+<!-- ── Dashboard ─────────────────────────────────────────────────────────── -->
+<div id="dashboard-screen" class="admin-shell hidden">
+  <div class="admin-header">
+    <div>
+      <h2 class="report-name">Interview Results</h2>
+      <p class="report-meta">Vedantu MT AI Interview — Admin Dashboard</p>
+    </div>
+    <button id="logout-btn" class="btn-secondary">Log Out</button>
+  </div>
+
+  <div id="list-view">
+    <div class="reports-table-wrap">
+      <table class="reports-table">
+        <thead>
+          <tr>
+            <th>Candidate</th>
+            <th>Subject</th>
+            <th>Date</th>
+            <th>Overall Score</th>
+            <th>Recommendation</th>
+          </tr>
+        </thead>
+        <tbody id="reports-tbody"></tbody>
+      </table>
+      <div id="reports-empty" class="empty-state hidden">No interviews completed yet.</div>
+    </div>
+  </div>
+
+  <div id="detail-view" class="hidden">
+    <span class="back-link" id="back-link">← Back to all results</span>
+    <div id="report-container"></div>
+  </div>
+</div>
+
+<script src="admin.js"></script>
+</body>
+</html>

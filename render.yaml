@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: vedantu-mt-ai-interview
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+
+# NOTE: the free plan has no persistent disk — anything written to data/reports/
+# is lost on restart or redeploy. Fine for testing; before real candidates use
+# this, add a paid disk (a few lines here) or move report storage to a hosted DB.

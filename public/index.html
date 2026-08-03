@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="Vedantu MT AI Interview — voice-driven, structured evaluation for Master Teacher candidates"/>
+  <title>Vedantu MT AI Interview</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- ── Background Orbs (decorative) ──────────────────────────────────────── -->
+<div class="bg-orbs" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     SCREEN 1 — SETUP
+     ═════════════════════════════════════════════════════════════════════════ -->
+<div id="screen-setup" class="screen active">
+  <div class="setup-card">
+
+    <!-- Logo -->
+    <div class="logo-wrap">
+      <img src="logo.png" class="logo-icon" alt="Vedantu logo"/>
+      <span class="logo-text">Vedantu MT AI Interview</span>
+    </div>
+    <p class="tagline">AI-Powered Master Teacher Evaluation Interview</p>
+
+    <!-- Form -->
+    <div class="form-group">
+      <label for="teacher-name">Your Full Name</label>
+      <input
+        type="text"
+        id="teacher-name"
+        placeholder="e.g. Priya Sharma"
+        autocomplete="name"
+        onkeydown="if(event.key==='Enter') App.startInterview()"
+      />
+    </div>
+
+    <div class="form-group">
+      <label for="subject-select">Teaching Subject</label>
+      <select id="subject-select">
+        <option value="">— Select a subject —</option>
+        <option value="Mathematics">Mathematics</option>
+        <option value="Physics">Physics</option>
+        <option value="Chemistry">Chemistry</option>
+        <option value="Biology">Biology</option>
+        <option value="Computer Science">Computer Science</option>
+        <option value="English">English Literature</option>
+      </select>
+    </div>
+
+    <button id="start-btn" class="btn-primary" onclick="App.startInterview()">
+      Begin Interview →
+    </button>
+
+    <!-- Browser warning -->
+    <div id="browser-warning" class="browser-warning hidden">
+      <strong>⚠️ Unsupported Browser</strong><br>
+      Voice features require <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.
+      Please switch browsers and reload.
+    </div>
+
+    <p class="disclaimer">🔒 This session is processed securely on our server. Your responses are used solely for evaluation.</p>
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     SCREEN 2 — INTERVIEW (VOICE CHAT)
+     ═════════════════════════════════════════════════════════════════════════ -->
+<div id="screen-interview" class="screen">
+
+  <!-- Stage Progress Bar -->
+  <div class="stage-bar" role="banner">
+    <div class="stage-bar-top">
+      <span id="stage-label" class="stage-label">Well-being Check</span>
+      <div class="stage-bar-right">
+        <span class="stage-meta">Vedantu MT AI Interview</span>
+        <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ Quit Interview</button>
+      </div>
+    </div>
+    <div class="stage-progress-track">
+      <div id="stage-progress-bar" class="stage-progress-fill"></div>
+    </div>
+    <!-- Stage Dots (9 stages) -->
+    <div class="stage-dots" aria-label="Interview progress" role="progressbar">
+      <div class="stage-dot" title="Well-being"></div>
+      <div class="stage-dot" title="Introduction"></div>
+      <div class="stage-dot" title="Education"></div>
+      <div class="stage-dot" title="Track Record"></div>
+      <div class="stage-dot" title="Teaching Style"></div>
+      <div class="stage-dot" title="Methodology"></div>
+      <div class="stage-dot" title="Problem Solving"></div>
+      <div class="stage-dot" title="Evaluation"></div>
+      <div class="stage-dot" title="Wrap Up"></div>
+    </div>
+  </div>
+
+  <!-- Chat Messages -->
+  <div class="messages-wrap" id="messages" role="log" aria-live="polite" aria-label="Interview conversation">
+  </div>
+
+  <!-- Voice Controls -->
+  <div class="voice-controls">
+    <!-- Waveform Visualiser -->
+    <div class="waveform" id="waveform" aria-hidden="true">
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+      <div class="waveform-bar"></div>
+    </div>
+
+    <!-- Mic Button -->
+    <button
+      id="mic-btn"
+      class="mic-btn"
+      aria-label="Start speaking"
+      onclick="App.onMicClick()"
+      disabled
+    >
+      <!-- Mic icon -->
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="9" y="2" width="6" height="12" rx="3"/>
+        <path d="M5 10a7 7 0 0 0 14 0"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="8"  y1="22" x2="16" y2="22"/>
+      </svg>
+    </button>
+
+    <p id="status-text" class="status-text" aria-live="assertive">Initialising…</p>
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     SCREEN 3 — PROBLEM SOLVING (WHITEBOARD)
+     ═════════════════════════════════════════════════════════════════════════ -->
+<div id="screen-problem" class="screen">
+
+  <div class="problem-header">
+    <h3>🧮 Problem Solving</h3>
+    <div class="problem-header-right">
+      <span id="q-subj" class="problem-badge"></span>
+      <div id="timer-badge" class="timer-badge">
+        <svg class="timer-ring" viewBox="0 0 36 36" aria-hidden="true">
+          <circle class="timer-ring-bg" cx="18" cy="18" r="16"/>
+          <circle id="timer-ring-fg" class="timer-ring-fg" cx="18" cy="18" r="16"/>
+        </svg>
+        <span id="timer-text" class="timer-text">1:30</span>
+      </div>
+      <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ Quit Interview</button>
+    </div>
+  </div>
+
+  <div class="wb-body">
+
+    <!-- Question strip -->
+    <div class="q-card-wb">
+      <div id="q-text" class="q-text"></div>
+      <div class="q-tags">
+        <span id="q-topic" class="q-tag blue"></span>
+        <span id="q-diff"  class="q-tag"></span>
+      </div>
+    </div>
+
+    <!-- Whiteboard Toolbar -->
+    <div class="wb-toolbar" role="toolbar" aria-label="Whiteboard tools">
+      <div class="wb-tool-group">
+        <button id="wb-tool-pen" class="wb-tool-btn active" onclick="Whiteboard.setTool('pen')" title="Pen">✏️ Pen</button>
+        <button id="wb-tool-eraser" class="wb-tool-btn" onclick="Whiteboard.setTool('eraser')" title="Eraser">🧹 Eraser</button>
+        <button class="wb-tool-btn" onclick="Whiteboard.undo()" title="Undo last stroke">↩️ Undo</button>
+        <button class="wb-tool-btn" onclick="Whiteboard.clear()" title="Clear board">🗑️ Clear</button>
+      </div>
+      <div class="wb-tool-group wb-colors" aria-label="Pen colour">
+        <button class="wb-color-btn active" data-color="#1a1a1a" style="background:#1a1a1a" onclick="Whiteboard.setColor('#1a1a1a', this)" title="Black"></button>
+        <button class="wb-color-btn" data-color="#2563eb" style="background:#2563eb" onclick="Whiteboard.setColor('#2563eb', this)" title="Blue"></button>
+        <button class="wb-color-btn" data-color="#dc2626" style="background:#dc2626" onclick="Whiteboard.setColor('#dc2626', this)" title="Red"></button>
+      </div>
+      <div class="wb-tool-group">
+        <button id="dictate-btn" class="wb-dictate-btn" onclick="App.toggleDictation()">🎤 No pen? Speak your solution</button>
+      </div>
+    </div>
+
+    <!-- Canvas -->
+    <div id="wb-canvas-wrap" class="wb-canvas-wrap">
+      <canvas id="wb-canvas" aria-label="Whiteboard drawing area"></canvas>
+    </div>
+
+    <!-- Dictation transcript -->
+    <div id="dictation-panel" class="dictation-panel hidden">
+      <p class="dictation-label"><span class="dictation-dot"></span> Listening — speak your solution step by step</p>
+      <p id="dictation-text" class="dictation-text"></p>
+    </div>
+
+    <button id="submit-solution-btn" class="btn-submit" onclick="App.submitSolution()">
+      ✔ Submit Solution
+    </button>
+  </div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     SCREEN 4 — LOADING (Generating Report)
+     ═════════════════════════════════════════════════════════════════════════ -->
+<div id="screen-loading" class="screen">
+  <div class="loading-ring" aria-hidden="true"></div>
+  <p class="loading-text">Generating your evaluation report…</p>
+  <p class="loading-sub">This takes about 10–15 seconds</p>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════
+     SCREEN 5 — THANK YOU
+     Results are never shown to the candidate — they're reviewed separately
+     by the recruitment team via the password-protected /admin dashboard.
+     ═════════════════════════════════════════════════════════════════════════ -->
+<div id="screen-report" class="screen">
+  <div id="report-container">
+    <div class="thankyou-card">
+      <div class="thankyou-icon">✅</div>
+      <h2>Thank You!</h2>
+      <p>Your interview has been completed and submitted for review.</p>
+      <p class="thankyou-sub">Our team will review your responses and get back to you with next steps.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── Scripts (order matters) ────────────────────────────────────────────── -->
+<script src="questions.js"></script>
+<script src="voice.js"></script>
+<script src="whiteboard.js"></script>
+<script src="report.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
