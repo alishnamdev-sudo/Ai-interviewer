@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <meta name="description" content="Vedantu MT AI Interview — voice-driven, structured evaluation for Master Teacher candidates"/>
   <title>Vedantu MT AI Interview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
@@ -22,6 +25,9 @@
 <div id="screen-setup" class="screen active">
   <div class="setup-card">
 
+    <!-- Eyebrow -->
+    <div class="eyebrow-badge"><span class="eyebrow-dot"></span> AI-Powered Interview</div>
+
     <!-- Logo -->
     <div class="logo-wrap">
       <img src="logo.png" class="logo-icon" alt="Vedantu logo"/>
@@ -32,61 +38,80 @@
     <!-- Form -->
     <div class="form-group">
       <label for="teacher-name">Your Full Name</label>
-      <input
-        type="text"
-        id="teacher-name"
-        placeholder="e.g. Priya Sharma"
-        autocomplete="name"
-        onkeydown="if(event.key==='Enter') App.startInterview()"
-      />
+      <div class="input-icon-wrap">
+        <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+        <input
+          type="text"
+          id="teacher-name"
+          placeholder="e.g. Priya Sharma"
+          autocomplete="name"
+          onkeydown="if(event.key==='Enter') App.startInterview()"
+        />
+      </div>
     </div>
 
     <div class="form-group">
       <label for="subject-select">Teaching Subject</label>
-      <select id="subject-select">
-        <option value="">— Select a subject —</option>
-        <option value="Mathematics">Mathematics</option>
-        <option value="Physics">Physics</option>
-        <option value="Chemistry">Chemistry</option>
-        <option value="Biology">Biology</option>
-        <option value="Computer Science">Computer Science</option>
-        <option value="English">English Literature</option>
-      </select>
+      <div class="input-icon-wrap">
+        <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5 10-5Z"/><path d="M6 12v5c0 1.5 2.7 3 6 3s6-1.5 6-3v-5"/></svg>
+        <select id="subject-select">
+          <option value="">— Select a subject —</option>
+          <option value="Mathematics">Mathematics</option>
+          <option value="Physics">Physics</option>
+          <option value="Chemistry">Chemistry</option>
+          <option value="Biology">Biology</option>
+          <option value="Computer Science">Computer Science</option>
+          <option value="English">English Literature</option>
+        </select>
+      </div>
     </div>
 
     <div class="form-group">
       <label for="language-select">Language You'll Speak In</label>
-      <select id="language-select">
-        <option value="en-IN">English (India)</option>
-        <option value="hi-IN">Hindi</option>
-        <option value="ta-IN">Tamil</option>
-        <option value="te-IN">Telugu</option>
-        <option value="mr-IN">Marathi</option>
-      </select>
+      <div class="input-icon-wrap">
+        <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9s1.3-6.5 3.8-9Z"/></svg>
+        <select id="language-select">
+          <option value="en-IN">English (India)</option>
+          <option value="hi-IN">Hindi</option>
+          <option value="ta-IN">Tamil</option>
+          <option value="te-IN">Telugu</option>
+          <option value="mr-IN">Marathi</option>
+        </select>
+      </div>
       <p class="field-hint">The AI Interviewer will always reply in English.</p>
     </div>
 
     <div class="form-group">
       <label for="resume-input">Upload Your Resume / CV <span class="required-mark">*</span></label>
-      <div class="resume-upload" id="resume-upload-zone">
+      <div
+        class="resume-upload"
+        id="resume-upload-zone"
+        onclick="document.getElementById('resume-input').click()"
+        ondragover="App.onResumeDragOver(event)"
+        ondragleave="App.onResumeDragLeave(event)"
+        ondrop="App.onResumeDrop(event)"
+      >
         <input
           type="file"
           id="resume-input"
           accept=".pdf,.png,.jpg,.jpeg,.txt"
           onchange="App.onResumeSelected(event)"
+          onclick="event.stopPropagation()"
           hidden
         />
-        <button type="button" class="resume-upload-btn" onclick="document.getElementById('resume-input').click()">
-          📄 Choose File
-        </button>
-        <span id="resume-filename" class="resume-filename">No file chosen</span>
+        <svg class="resume-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v5a1 1 0 0 0 1 1h5"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 15h6M9 11h3"/></svg>
+        <div class="resume-upload-copy">
+          <span class="resume-upload-title">Drop your resume here, or <u>browse</u></span>
+          <span id="resume-filename" class="resume-filename">PDF, PNG, JPG or TXT — max 8MB</span>
+        </div>
       </div>
       <p id="resume-status" class="field-hint resume-status"></p>
       <div id="resume-summary-card" class="resume-summary-card hidden"></div>
     </div>
 
     <button id="start-btn" class="btn-primary" onclick="App.startInterview()">
-      Begin Interview →
+      <span>Begin Interview</span>
+      <svg class="btn-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
     </button>
 
     <!-- Browser warning -->
@@ -96,7 +121,10 @@
       Please switch browsers and reload.
     </div>
 
-    <p class="disclaimer">🔒 This session is processed securely on our server. Your responses are used solely for evaluation.</p>
+    <p class="disclaimer">
+      <svg class="disclaimer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+      This session is processed securely on our server. Your responses are used solely for evaluation.
+    </p>
   </div>
 </div>
 
@@ -175,7 +203,10 @@
 <div id="screen-problem" class="screen">
 
   <div class="problem-header">
-    <h3>🧮 Problem Solving</h3>
+    <h3>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01"/></svg>
+      Problem Solving
+    </h3>
     <div class="problem-header-right">
       <span id="q-subj" class="problem-badge"></span>
       <div id="timer-badge" class="timer-badge">
@@ -203,10 +234,22 @@
     <!-- Whiteboard Toolbar -->
     <div class="wb-toolbar" role="toolbar" aria-label="Whiteboard tools">
       <div class="wb-tool-group">
-        <button id="wb-tool-pen" class="wb-tool-btn active" onclick="Whiteboard.setTool('pen')" title="Pen">✏️ Pen</button>
-        <button id="wb-tool-eraser" class="wb-tool-btn" onclick="Whiteboard.setTool('eraser')" title="Eraser">🧹 Eraser</button>
-        <button class="wb-tool-btn" onclick="Whiteboard.undo()" title="Undo last stroke">↩️ Undo</button>
-        <button class="wb-tool-btn" onclick="Whiteboard.clear()" title="Clear board">🗑️ Clear</button>
+        <button id="wb-tool-pen" class="wb-tool-btn active" onclick="Whiteboard.setTool('pen')" title="Pen">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 3 4 4L7 21H3v-4L17 3Z"/></svg>
+          Pen
+        </button>
+        <button id="wb-tool-eraser" class="wb-tool-btn" onclick="Whiteboard.setTool('eraser')" title="Eraser">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20 20-9-9 6.5-6.5a2 2 0 0 1 2.83 0l3.17 3.17a2 2 0 0 1 0 2.83L15 20"/><path d="M6 20h14M9 11 4 16l3 4h5"/></svg>
+          Eraser
+        </button>
+        <button class="wb-tool-btn" onclick="Whiteboard.undo()" title="Undo last stroke">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5v0A5.5 5.5 0 0 1 14.5 20H11"/></svg>
+          Undo
+        </button>
+        <button class="wb-tool-btn" onclick="Whiteboard.clear()" title="Clear board">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          Clear
+        </button>
       </div>
       <div class="wb-tool-group wb-colors" aria-label="Pen colour">
         <button class="wb-color-btn active" data-color="#1a1a1a" style="background:#1a1a1a" onclick="Whiteboard.setColor('#1a1a1a', this)" title="Black"></button>
@@ -214,7 +257,10 @@
         <button class="wb-color-btn" data-color="#dc2626" style="background:#dc2626" onclick="Whiteboard.setColor('#dc2626', this)" title="Red"></button>
       </div>
       <div class="wb-tool-group">
-        <button id="dictate-btn" class="wb-dictate-btn" onclick="App.toggleDictation()">🎤 No pen? Speak your solution</button>
+        <button id="dictate-btn" class="wb-dictate-btn" onclick="App.toggleDictation()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+          No pen? Speak your solution
+        </button>
       </div>
     </div>
 
@@ -230,7 +276,8 @@
     </div>
 
     <button id="submit-solution-btn" class="btn-submit" onclick="App.submitSolution()">
-      ✔ Submit Solution
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+      Submit Solution
     </button>
   </div>
 </div>
@@ -252,7 +299,9 @@
 <div id="screen-report" class="screen">
   <div id="report-container">
     <div class="thankyou-card">
-      <div class="thankyou-icon">✅</div>
+      <div class="thankyou-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="m8 12 3 3 5-6"/></svg>
+      </div>
       <h2>Thank You!</h2>
       <p>Your interview has been completed and submitted for review.</p>
       <p class="thankyou-sub">Our team will review your responses and get back to you with next steps.</p>

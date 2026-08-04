@@ -48,6 +48,8 @@ const STAGE_OPENERS = {
   WRAP_UP:       ()        => `[NEW_STAGE: WRAP_UP] Thank the teacher for their time and invite any final thoughts.`,
 };
 
+const SUBMIT_BTN_MARKUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Submit Solution';
+
 // ─── Whiteboard Timer ─────────────────────────────────────────────────────────
 const SOLVE_SECONDS = 90;
 
@@ -166,8 +168,30 @@ const App = {
   },
 
   // ── Resume Upload ──────────────────────────────────────────────────────────
-  async onResumeSelected(event) {
+  onResumeSelected(event) {
     const file = event.target.files && event.target.files[0];
+    if (file) this._handleResumeFile(file);
+  },
+
+  onResumeDragOver(event) {
+    event.preventDefault();
+    document.getElementById('resume-upload-zone').classList.add('drag-over');
+  },
+
+  onResumeDragLeave(event) {
+    event.preventDefault();
+    document.getElementById('resume-upload-zone').classList.remove('drag-over');
+  },
+
+  onResumeDrop(event) {
+    event.preventDefault();
+    document.getElementById('resume-upload-zone').classList.remove('drag-over');
+    const file = event.dataTransfer.files && event.dataTransfer.files[0];
+    if (file) this._handleResumeFile(file);
+  },
+
+  async _handleResumeFile(file) {
+    const DEFAULT_HINT = 'PDF, PNG, JPG or TXT — max 8MB';
     const statusEl = document.getElementById('resume-status');
     const nameEl   = document.getElementById('resume-filename');
     const cardEl   = document.getElementById('resume-summary-card');
@@ -178,15 +202,17 @@ const App = {
     cardEl.classList.add('hidden');
     cardEl.innerHTML = '';
 
-    if (!file) { nameEl.textContent = 'No file chosen'; statusEl.textContent = ''; return; }
+    if (!file) { nameEl.textContent = DEFAULT_HINT; statusEl.textContent = ''; return; }
 
     nameEl.textContent = file.name;
+
+    const fileInput = document.getElementById('resume-input');
 
     const MAX_BYTES = 8 * 1024 * 1024;
     if (file.size > MAX_BYTES) {
       statusEl.className = 'field-hint resume-status error';
       statusEl.textContent = 'File is too large (max 8MB). Please upload a smaller file.';
-      event.target.value = '';
+      if (fileInput) fileInput.value = '';
       return;
     }
 
@@ -196,7 +222,7 @@ const App = {
     if (!mimeType || !Object.values(extMimeMap).includes(mimeType)) {
       statusEl.className = 'field-hint resume-status error';
       statusEl.textContent = 'Unsupported file type. Please upload a PDF, PNG, JPG, or TXT resume.';
-      event.target.value = '';
+      if (fileInput) fileInput.value = '';
       return;
     }
 
@@ -405,11 +431,11 @@ const App = {
     document.getElementById('dictation-panel').classList.add('hidden');
     document.getElementById('dictation-text').textContent = '';
     document.getElementById('dictate-btn').classList.remove('active');
-    document.getElementById('dictate-btn').textContent = '🎤 No pen? Speak your solution';
+    this._setDictateBtnLabel(false);
 
     const btn = document.getElementById('submit-solution-btn');
     btn.disabled = false;
-    btn.innerHTML = '✔ Submit Solution';
+    btn.innerHTML = SUBMIT_BTN_MARKUP;
 
     // Canvas is inside a screen that was just made visible (display:none -> flex).
     // Querying layout here forces the browser to flush that style change first,
@@ -450,13 +476,13 @@ const App = {
       VoiceManager.stopDictation();
       this.s.dictating = false;
       btn.classList.remove('active');
-      btn.textContent = '🎤 No pen? Speak your solution';
+      this._setDictateBtnLabel(false);
       return;
     }
 
     this.s.dictating = true;
     btn.classList.add('active');
-    btn.textContent = '⏹ Stop Speaking';
+    this._setDictateBtnLabel(true);
     panel.classList.remove('hidden');
 
     VoiceManager.startDictation(
@@ -469,11 +495,19 @@ const App = {
         console.warn('Dictation error:', err);
         this.s.dictating = false;
         btn.classList.remove('active');
-        btn.textContent = '🎤 No pen? Speak your solution';
+        this._setDictateBtnLabel(false);
         if (!this.s.dictatedText) panel.classList.add('hidden');
         this.showToast('Could not access microphone for dictation.', 'error');
       }
     );
+  },
+
+  _setDictateBtnLabel(active) {
+    const btn = document.getElementById('dictate-btn');
+    if (!btn) return;
+    btn.innerHTML = active
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg> Stop Speaking'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/></svg> No pen? Speak your solution';
   },
 
   async submitSolution(auto = false) {
@@ -555,7 +589,7 @@ const App = {
 
     } catch (e) {
       btn.disabled  = false;
-      btn.innerHTML = '✔ Submit Solution';
+      btn.innerHTML = SUBMIT_BTN_MARKUP;
       if (!this.s.quitting) this.handleErr(e);
     }
   },
