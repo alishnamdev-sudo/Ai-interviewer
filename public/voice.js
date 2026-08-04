@@ -1,6 +1,11 @@
 /**
- * VoiceManager — wraps Web Speech API (SpeechRecognition + SpeechSynthesis)
+ * VoiceManager — wraps Web Speech API (SpeechRecognition + SpeechSynthesis).
  * All state is private; public surface is minimal.
+ *
+ * Speech synthesis runs entirely in the browser (no server/cloud TTS cost),
+ * so the AI's accent is only as Indian as whatever voice happens to be
+ * installed on the candidate's machine — see pickBestVoice() below for the
+ * best-effort selection logic and its limits.
  */
 const VoiceManager = (() => {
   const SpeechRecognition =
@@ -8,6 +13,7 @@ const VoiceManager = (() => {
 
   let recognition = null;
   let selectedVoice = null;
+  let _isIndianVoice = false;
   let _isListening = false;
   let _isSpeaking = false;
   let _cancelledByCaller = false;
@@ -15,21 +21,49 @@ const VoiceManager = (() => {
   let dictationRecognition = null;
   let _isDictating = false;
 
+  // The candidate may speak in any of these; the AI always tries to answer
+  // back in Indian English regardless (see pickBestVoice / speak below).
+  let recognitionLang = 'en-IN';
+
   // ── Voice loading ──────────────────────────────────────────────────────────
+  // Best-effort: prefer any voice that's actually Indian English. Browsers
+  // only expose voices installed on the OS (or, for Chrome, Google's network
+  // voices — which don't currently include an Indian English option), so on
+  // most machines none of this will match and we fall back to a generic
+  // English voice. There is no free, in-browser way to force a genuine
+  // Indian accent onto a non-Indian voice.
   function pickBestVoice(voices) {
+    // Known-good Indian English voices across the major platforms. Order
+    // matters — natural/neural voices first, since they handle Indian names
+    // far better than older robotic ones even within the same "Indian" tag.
     const preferred = [
-      'Google UK English Female',
-      'Microsoft Zira - English (United States)',
-      'Google US English',
-      'Samantha',
-      'Alex',
-      'Google UK English Male',
+      'Microsoft Neerja Online (Natural) - English (India)',
+      'Microsoft Neerja (Natural) - English (India)',
+      'Microsoft Neerja - English (India)',
+      'Microsoft Prabhat Online (Natural) - English (India)',
+      'Microsoft Heera - English (India)',
+      'Microsoft Ravi - English (India)',
+      'Google Indian English Female',
+      'Google Indian English Male',
+      'Rishi', // Apple's Indian English voice on recent iOS/macOS
     ];
     for (const name of preferred) {
       const v = voices.find(v => v.name === name);
       if (v) return v;
     }
+    // Any voice explicitly tagged as Indian English by locale...
+    const enIN = voices.find(v => v.lang === 'en-IN' || v.lang === 'en_IN');
+    if (enIN) return enIN;
+    // ...or just mentioning India/Indian in its name, whatever the vendor calls it.
+    const namedIndia = voices.find(v => /india/i.test(v.name));
+    if (namedIndia) return namedIndia;
+    // Fall back to any English voice rather than a non-English default.
     return voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0] || null;
+  }
+
+  function isVoiceIndian(voice) {
+    if (!voice) return false;
+    return /en[-_]in/i.test(voice.lang || '') || /india/i.test(voice.name || '');
   }
 
   function loadVoice() {
@@ -37,10 +71,12 @@ const VoiceManager = (() => {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
         selectedVoice = pickBestVoice(voices);
+        _isIndianVoice = isVoiceIndian(selectedVoice);
         resolve();
       } else {
         window.speechSynthesis.addEventListener('voiceschanged', () => {
           selectedVoice = pickBestVoice(window.speechSynthesis.getVoices());
+          _isIndianVoice = isVoiceIndian(selectedVoice);
           resolve();
         }, { once: true });
         // Timeout fallback in case voiceschanged never fires
@@ -50,17 +86,24 @@ const VoiceManager = (() => {
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────
-  function init() {
+  // lang: BCP-47 code for the language the CANDIDATE will speak in
+  // (e.g. 'en-IN', 'hi-IN', 'ta-IN', 'te-IN', 'mr-IN'). The Web Speech API can
+  // only recognise one language per session — it can't auto-detect or switch
+  // between these mid-conversation — so this is fixed for the interview based
+  // on what the candidate picked at setup. The AI's own spoken replies are
+  // always intended to be Indian English, independent of this setting.
+  function init(lang) {
     if (!SpeechRecognition) return { supported: false };
+
+    recognitionLang = lang || 'en-IN';
 
     recognition = new SpeechRecognition();
     // continuous:true so Chrome doesn't silently auto-stop after its own short
     // internal "no speech" timeout (often ~5s, shorter than our 10s grace period
     // and outside our control) — we decide when to give up, not the browser.
-    // We explicitly stop() once we get a real final result (see listen() below).
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    recognition.lang = recognitionLang;
     recognition.maxAlternatives = 1;
     return { supported: true };
   }
@@ -110,9 +153,20 @@ const VoiceManager = (() => {
       utt.rate = 0.92;
       utt.pitch = 1.05;
       utt.volume = 1.0;
+      // Hints Indian English to the engine even when falling back to a
+      // non-Indian voice — some engines use this for pronunciation, though
+      // most just ignore it and keep the voice's own native accent.
+      utt.lang = 'en-IN';
       if (selectedVoice) utt.voice = selectedVoice;
 
-      utt.onend = () => { idx++; speakNext(); };
+      utt.onend = () => {
+        // Some browsers (notably Chrome) fire 'end' rather than 'error' when an
+        // utterance is cut short by speechSynthesis.cancel(), so onerror's
+        // _cancelledByCaller check alone isn't reliable — check here too, or a
+        // cancelled utterance can still chain into speaking the next chunk.
+        if (_cancelledByCaller) { _isSpeaking = false; return; }
+        idx++; speakNext();
+      };
       utt.onerror = e => {
         _isSpeaking = false;
         // A deliberate interruption (stopSpeaking) means the caller is already
@@ -134,28 +188,30 @@ const VoiceManager = (() => {
   }
 
   // ── Speech Recognition ─────────────────────────────────────────────────────
-  function listen(onFinal, onInterim, onError) {
+  // onUpdate(text) fires on every interim AND final chunk with the full
+  // accumulated transcript so far. We deliberately do NOT stop recognition on
+  // the browser's first "final" segment — Chrome finalizes a phrase after a
+  // fairly short internal pause (~1s), which is much shorter than the pause
+  // we actually want to tolerate mid-answer. The caller (App) decides when
+  // the candidate is really done, based on its own pause timer, and calls
+  // stopListening() at that point.
+  function listen(onUpdate, onError) {
     if (!recognition) {
       if (onError) onError('not_supported');
       return;
     }
 
+    let finalText = '';
+
     recognition.onresult = event => {
       let interim = '';
-      let final = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) final += t;
+        if (event.results[i].isFinal) finalText += (finalText ? ' ' : '') + t;
         else interim += t;
       }
-      if (interim && onInterim) onInterim(interim);
-      if (final) {
-        _isListening = false;
-        // continuous:true keeps the mic open past one utterance — we only want
-        // this one answer, so stop it ourselves now that we have a result.
-        try { recognition.stop(); } catch (_) {}
-        onFinal(final.trim());
-      }
+      const combined = (finalText + ' ' + interim).trim();
+      if (combined && onUpdate) onUpdate(combined);
     };
 
     recognition.onerror = event => {
@@ -193,7 +249,7 @@ const VoiceManager = (() => {
     dictationRecognition = new SpeechRecognition();
     dictationRecognition.continuous = true;
     dictationRecognition.interimResults = true;
-    dictationRecognition.lang = 'en-US';
+    dictationRecognition.lang = recognitionLang;
     dictationRecognition.maxAlternatives = 1;
 
     dictationRecognition.onresult = event => {
@@ -249,5 +305,7 @@ const VoiceManager = (() => {
     get isListening() { return _isListening; },
     get isSpeaking() { return _isSpeaking; },
     get isDictating() { return _isDictating; },
+    get isIndianVoice() { return _isIndianVoice; },
+    get selectedVoiceName() { return selectedVoice ? selectedVoice.name : null; },
   };
 })();

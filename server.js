@@ -28,7 +28,7 @@ if (!process.env.ADMIN_PASSWORD) {
   process.exit(1);
 }
 
-app.use(express.json({ limit: '8mb' })); // whiteboard screenshots are base64-encoded PNGs
+app.use(express.json({ limit: '12mb' })); // whiteboard screenshots and resume uploads are base64-encoded
 
 app.use(session({
   secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
@@ -106,10 +106,19 @@ app.get('/api/admin/reports/:id', requireAdmin, (req, res) => {
 });
 
 // ─── System Prompt Builder ────────────────────────────────────────────────────
-function buildSystemPrompt(stage, teacherName, subject) {
-  return `You are a warm, highly professional interviewer evaluating a teacher's competency for the subject: ${subject}.
+function buildSystemPrompt(stage, teacherName, subject, resumeSummary) {
+  const resumeBlock = resumeSummary
+    ? `\nCANDIDATE RESUME — ALREADY KNOWN, DO NOT RE-ASK:\n${resumeSummary}\n\nThe facts above were extracted from the candidate's uploaded resume before the interview started. Treat every fact stated there as already answered. Never ask a question whose answer is already in this summary (e.g. their name, years of experience, current institute/designation, degrees, universities, specializations, or achievements already listed). Instead, during INTRO, EDUCATION, and TRACK_RECORD, briefly reference what you already know and ask ONE deeper or clarifying follow-up about it (e.g. "I see you've been teaching for 6 years at XYZ — what's been your biggest challenge there?"). If the resume already fully covers a stage's topic with no interesting follow-up needed, keep it to a single brief acknowledgment and move on quickly.\n`
+    : '';
+
+  return `You are a warm, highly professional interviewer at Vedantu, an Indian ed-tech company, evaluating a teacher's competency for the subject: ${subject}.
 You are interviewing: ${teacherName || 'the candidate'}.
 Current interview stage: ${stage}
+${resumeBlock}
+INDIAN CONTEXT: You are speaking with an Indian teacher about the Indian education system. Use natural
+Indian-professional English (e.g. references to boards like CBSE/ICSE, exams like JEE/NEET, and terms
+like PYQs are all familiar territory — no need to explain them). Address the candidate by their name
+exactly as given above — never shorten, anglicize, or invent a nickname for it.
 
 STAGE DESCRIPTIONS:
 - WELLBEING   : Check how the teacher feels today; make them comfortable. 1-2 warm exchanges.
@@ -136,19 +145,25 @@ STRICT RULES — violating these is unacceptable:
    this message, without waiting for a reply, so any question asked here will never
    actually be heard by the candidate.
 6. Never repeat a question already asked.
-7. Be warm, encouraging, and professional at all times.`;
+7. Be warm, encouraging, and professional at all times.
+8. The candidate may answer in English, Hindi, Tamil, Telugu, or Marathi (transcribed via speech
+   recognition). ALWAYS respond in English yourself, regardless of which language they used —
+   your reply is read aloud by an English text-to-speech voice, so it must be plain English text,
+   never Hindi/Tamil/Telugu/Marathi script or transliteration.
+9. Never ask about a fact already listed in the CANDIDATE RESUME block above — see the instructions
+   there for how to handle INTRO, EDUCATION, and TRACK_RECORD when resume data is present.`;
 }
 
 // ─── /api/chat ────────────────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   try {
-    const { history = [], userMessage, stage, teacherName, subject } = req.body;
+    const { history = [], userMessage, stage, teacherName, subject, resumeSummary } = req.body;
 
     if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      systemInstruction: buildSystemPrompt(stage, teacherName, subject),
+      systemInstruction: buildSystemPrompt(stage, teacherName, subject, resumeSummary),
       generationConfig: { temperature: 0.75, maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } }
     });
 
@@ -163,6 +178,53 @@ app.post('/api/chat', async (req, res) => {
   } catch (err) {
     console.error('[/api/chat]', err.message);
     res.status(500).json({ error: 'AI response failed', details: err.message });
+  }
+});
+
+// ─── /api/parse-resume ────────────────────────────────────────────────────────
+const RESUME_MIME_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'text/plain']);
+
+app.post('/api/parse-resume', async (req, res) => {
+  try {
+    const { fileBase64, mimeType } = req.body;
+
+    if (!fileBase64 || !mimeType) {
+      return res.status(400).json({ error: 'fileBase64 and mimeType are required' });
+    }
+    if (!RESUME_MIME_TYPES.has(mimeType)) {
+      return res.status(400).json({ error: 'Unsupported file type. Please upload a PDF, PNG, JPG, or TXT resume.' });
+    }
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature: 0.2, maxOutputTokens: 700, thinkingConfig: { thinkingBudget: 0 } }
+    });
+
+    const promptText = `You are extracting structured information from a teacher's resume/CV for an interview system. Read the attached document carefully.
+
+Respond ONLY with the exact JSON object below — no markdown fences, no prose before or after it. If a field is not present in the resume, use null (or an empty array for list fields). Do not invent information that isn't in the document.
+{
+  "name": "candidate's full name or null",
+  "yearsExperience": "e.g. '6 years' or null",
+  "currentInstitute": "current/most recent institute and designation, or null",
+  "education": ["degree, institution, year — one string per entry"],
+  "subjectsTaught": ["subject 1", "subject 2"],
+  "achievements": ["notable ranks, toppers produced, awards, or accomplishments — one string per entry"],
+  "summaryText": "A concise 3-5 sentence third-person summary of this candidate's background, suitable for briefing an interviewer so they don't re-ask basic biographical questions."
+}`;
+
+    const data = fileBase64.replace(/^data:[\w/+-]+;base64,/, '');
+    const parts = [{ text: promptText }, { inlineData: { mimeType, data } }];
+
+    const result = await model.generateContent(parts);
+    let raw = result.response.text().trim();
+    raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+    const parsed = JSON.parse(raw);
+    res.json({ success: true, resume: parsed });
+  } catch (err) {
+    console.error('[/api/parse-resume]', err.message);
+    res.status(500).json({ error: 'Could not analyse the resume. Please try a different file.', details: err.message });
   }
 });
 

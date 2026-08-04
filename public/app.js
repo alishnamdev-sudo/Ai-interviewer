@@ -28,12 +28,20 @@ const STAGE_LABELS = {
   WRAP_UP:       'Wrap Up'
 };
 
-// Stage opener prompts (trigger AI to begin the stage naturally)
+// Stage opener prompts (trigger AI to begin the stage naturally). Some accept
+// a `hasResume` flag so the opener steers toward resume-aware follow-ups
+// instead of blindly asking for facts the resume already covers.
 const STAGE_OPENERS = {
   WELLBEING:     (name)    => `You are starting the interview. Greet ${name} warmly and ask how they are feeling today. Keep it short.`,
-  INTRO:         ()        => `[NEW_STAGE: INTRO] Ask your first question about the teacher's introduction — name, years of experience, or current role.`,
-  EDUCATION:     ()        => `[NEW_STAGE: EDUCATION] Ask your first question about the teacher's educational background.`,
-  TRACK_RECORD:  ()        => `[NEW_STAGE: TRACK_RECORD] Ask your first question about the academic ranks or toppers this teacher has produced.`,
+  INTRO:         (name, hasResume) => hasResume
+    ? `[NEW_STAGE: INTRO] The candidate's resume is attached in your instructions. Briefly reference something specific from it and ask ONE deeper follow-up question about their role or experience — do not re-ask for facts already in the resume.`
+    : `[NEW_STAGE: INTRO] Ask your first question about the teacher's introduction — name, years of experience, or current role.`,
+  EDUCATION:     (name, hasResume) => hasResume
+    ? `[NEW_STAGE: EDUCATION] The candidate's resume is attached in your instructions. If it already lists their degrees/university, ask ONE deeper follow-up (e.g. about their specialization or a relevant project) instead of re-asking basic facts.`
+    : `[NEW_STAGE: EDUCATION] Ask your first question about the teacher's educational background.`,
+  TRACK_RECORD:  (name, hasResume) => hasResume
+    ? `[NEW_STAGE: TRACK_RECORD] The candidate's resume is attached in your instructions. If achievements/ranks/toppers are already listed there, ask ONE deeper follow-up about one of them instead of asking from scratch.`
+    : `[NEW_STAGE: TRACK_RECORD] Ask your first question about the academic ranks or toppers this teacher has produced.`,
   TEACHING_STYLE:()        => `[NEW_STAGE: TEACHING_STYLE] Ask your first question about how this teacher typically explains complex concepts.`,
   METHODOLOGY:   ()        => `[NEW_STAGE: METHODOLOGY] Ask your first question about how many Previous Year Questions (PYQs) the teacher covers in each class.`,
   EVALUATION:    ()        => null, // handled by submitSolution
@@ -44,8 +52,14 @@ const STAGE_OPENERS = {
 const SOLVE_SECONDS = 90;
 
 // If the candidate stays silent this long after the AI asks a (non-whiteboard)
-// question, treat it as no-answer and move on rather than waiting forever.
+// question — i.e. hasn't started speaking at all — treat it as no-answer and
+// move on rather than waiting forever.
 const SILENCE_TIMEOUT_MS = 10000;
+
+// Once the candidate HAS started speaking, a shorter pause is enough to
+// consider their answer complete (they don't need another full 10s grace
+// period every time they take a breath mid-sentence).
+const PAUSE_TIMEOUT_MS = 5000;
 
 // If that happens this many times in a row, end the interview early instead
 // of continuing to prompt an interviewee who isn't responding.
@@ -82,6 +96,7 @@ const App = {
   s: {
     teacherName:   '',
     subject:       '',
+    spokenLang:    'en-IN',
     stageIndex:    0,
     history:       [],        // Gemini API history (alternating user/model)
     currentQuestion: null,
@@ -91,8 +106,13 @@ const App = {
     dictating:     false,
     dictatedText:  '',
     silenceTimer:  null,
+    lastRecognizedText: '',
     consecutiveSilences: 0,
-    quitting:      false
+    quitting:      false,
+    resumeAnalyzing: false,
+    resumeAnalyzed:  false,
+    resumeSummary:   null, // summaryText string sent to the AI as resume context
+    resumeInfo:      null  // structured { name, yearsExperience, ... } for the confirmation card
   },
 
   get stage() { return STAGES[this.s.stageIndex]; },
@@ -101,15 +121,27 @@ const App = {
   async startInterview() {
     const name    = document.getElementById('teacher-name').value.trim();
     const subject = document.getElementById('subject-select').value;
+    const spokenLang = document.getElementById('language-select').value || 'en-IN';
 
     if (!name)    { this.flashError('teacher-name',    'Please enter your name');      return; }
     if (!subject) { this.flashError('subject-select',  'Please select a subject');     return; }
+    if (this.s.resumeAnalyzing) { this.showToast('Please wait — still analysing your resume…', 'warn'); return; }
+    if (!this.s.resumeAnalyzed) {
+      this.showToast('Please upload your resume/CV before starting the interview.', 'warn');
+      const zone = document.getElementById('resume-upload-zone');
+      if (zone) { zone.classList.add('error-flash'); setTimeout(() => zone.classList.remove('error-flash'), 2000); }
+      return;
+    }
 
     this.s.teacherName = name;
     this.s.subject     = subject;
+    this.s.spokenLang  = spokenLang;
     this.s.startDate   = new Date().toLocaleString('en-IN');
 
-    const { supported } = VoiceManager.init();
+    // Recognition listens in whichever language the candidate picked; the AI
+    // always speaks back in Indian English (VoiceManager.speak forces this
+    // independent of recognition language — see voice.js).
+    const { supported } = VoiceManager.init(spokenLang);
     if (!supported) {
       document.getElementById('browser-warning').classList.remove('hidden');
       return;
@@ -119,11 +151,113 @@ const App = {
     document.getElementById('start-btn').textContent = 'Initialising…';
 
     await VoiceManager.loadVoice();
+    if (!VoiceManager.isIndianVoice) {
+      // Best-effort only: no Indian-English voice was found on this browser/OS,
+      // so names and Indian-context words will come out in a generic accent.
+      // Nudge toward Edge, which ships a genuine Indian neural voice (Neerja)
+      // by default — this doesn't block starting the interview either way.
+      this.showToast('No Indian-English voice detected — try Microsoft Edge for authentic pronunciation.', 'info');
+    }
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
 
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
+  },
+
+  // ── Resume Upload ──────────────────────────────────────────────────────────
+  async onResumeSelected(event) {
+    const file = event.target.files && event.target.files[0];
+    const statusEl = document.getElementById('resume-status');
+    const nameEl   = document.getElementById('resume-filename');
+    const cardEl   = document.getElementById('resume-summary-card');
+
+    this.s.resumeAnalyzed = false;
+    this.s.resumeSummary  = null;
+    this.s.resumeInfo     = null;
+    cardEl.classList.add('hidden');
+    cardEl.innerHTML = '';
+
+    if (!file) { nameEl.textContent = 'No file chosen'; statusEl.textContent = ''; return; }
+
+    nameEl.textContent = file.name;
+
+    const MAX_BYTES = 8 * 1024 * 1024;
+    if (file.size > MAX_BYTES) {
+      statusEl.className = 'field-hint resume-status error';
+      statusEl.textContent = 'File is too large (max 8MB). Please upload a smaller file.';
+      event.target.value = '';
+      return;
+    }
+
+    const extMimeMap = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', txt: 'text/plain' };
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const mimeType = extMimeMap[ext] || file.type;
+    if (!mimeType || !Object.values(extMimeMap).includes(mimeType)) {
+      statusEl.className = 'field-hint resume-status error';
+      statusEl.textContent = 'Unsupported file type. Please upload a PDF, PNG, JPG, or TXT resume.';
+      event.target.value = '';
+      return;
+    }
+
+    this.s.resumeAnalyzing = true;
+    statusEl.className = 'field-hint resume-status analyzing';
+    statusEl.textContent = 'Analysing your resume…';
+
+    try {
+      const fileBase64 = await this._readFileAsBase64(file);
+      const res = await fetch('/api/parse-resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileBase64, mimeType })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Resume analysis failed');
+
+      this.s.resumeInfo    = data.resume;
+      this.s.resumeSummary = data.resume.summaryText || null;
+      this.s.resumeAnalyzed = true;
+
+      statusEl.className = 'field-hint resume-status success';
+      statusEl.textContent = '✓ Resume analysed successfully';
+
+      this._renderResumeSummaryCard(data.resume);
+
+      // Pre-fill the name field from the resume if the candidate hasn't typed one yet.
+      const nameInput = document.getElementById('teacher-name');
+      if (nameInput && !nameInput.value.trim() && data.resume.name) {
+        nameInput.value = data.resume.name;
+      }
+    } catch (e) {
+      console.error('Resume analysis error:', e);
+      statusEl.className = 'field-hint resume-status error';
+      statusEl.textContent = 'Could not analyse this resume. Please try again or use a different file.';
+      this.s.resumeAnalyzed = false;
+    } finally {
+      this.s.resumeAnalyzing = false;
+    }
+  },
+
+  _readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result); // data: URL, server strips the prefix
+      reader.onerror = () => reject(reader.error || new Error('File read failed'));
+      reader.readAsDataURL(file);
+    });
+  },
+
+  _renderResumeSummaryCard(resume) {
+    const cardEl = document.getElementById('resume-summary-card');
+    if (!cardEl) return;
+    const items = [];
+    if (resume.yearsExperience)  items.push(`<li>${resume.yearsExperience} of experience</li>`);
+    if (resume.currentInstitute) items.push(`<li>${resume.currentInstitute}</li>`);
+    if (Array.isArray(resume.education) && resume.education.length) items.push(`<li>${resume.education[0]}</li>`);
+    if (Array.isArray(resume.achievements) && resume.achievements.length) items.push(`<li>${resume.achievements[0]}</li>`);
+
+    cardEl.innerHTML = `<strong>${resume.name || 'Candidate'} — detected from resume</strong>${items.length ? `<ul>${items.join('')}</ul>` : ''}`;
+    cardEl.classList.remove('hidden');
   },
 
   // ── Stage Management ───────────────────────────────────────────────────────
@@ -138,22 +272,25 @@ const App = {
     const openerFn = STAGE_OPENERS[stage];
     if (!openerFn) { await this.advanceStage(); return; }
 
-    const triggerMsg = openerFn(this.s.teacherName);
+    const triggerMsg = openerFn(this.s.teacherName, !!this.s.resumeSummary);
     if (!triggerMsg) { await this.advanceStage(); return; }
 
     this.setStatus('thinking');
 
     try {
       const resp = await this.callChat(triggerMsg, /*hidden*/ true);
+      if (this.s.quitting) return; // candidate quit while this was in flight
+
       this.renderAIMsg(resp.text);
       this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[stage]);
 
       this.setStatus('speaking');
       VoiceManager.speak(resp.text, () => {
+        if (this.s.quitting) return;
         if (resp.stageComplete) { this.advanceStage(); }
         else { this.startListening(); }
       });
-    } catch (e) { this.handleErr(e); }
+    } catch (e) { if (!this.s.quitting) this.handleErr(e); }
   },
 
   async handleAnswer(text) {
@@ -169,12 +306,15 @@ const App = {
 
     try {
       const resp = await this.callChat(text, /*hidden*/ false);
+      if (this.s.quitting) { this.s.isProcessing = false; return; }
+
       this.renderAIMsg(resp.text);
       this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[this.stage]);
 
       this.setStatus('speaking');
       VoiceManager.speak(resp.text, () => {
         this.s.isProcessing = false;
+        if (this.s.quitting) return;
         // WRAP_UP is the last stage — end after this one reply regardless of
         // whether the model remembered to emit [STAGE_COMPLETE], so the
         // interview can't loop forever waiting for a token that never comes.
@@ -183,7 +323,7 @@ const App = {
       });
     } catch (e) {
       this.s.isProcessing = false;
-      this.handleErr(e);
+      if (!this.s.quitting) this.handleErr(e);
     }
   },
 
@@ -205,9 +345,10 @@ const App = {
     const body = {
       history:     historyToSend,
       userMessage,
-      stage:       this.stage,
-      teacherName: this.s.teacherName,
-      subject:     this.s.subject
+      stage:        this.stage,
+      teacherName:  this.s.teacherName,
+      subject:      this.s.subject,
+      resumeSummary: this.s.resumeSummary
     };
 
     // Add user turn to local history
@@ -245,6 +386,7 @@ const App = {
     this.setStatus('speaking');
 
     VoiceManager.speak(announcement, () => {
+      if (this.s.quitting) return;
       this.showScreen('problem');
       this.renderProblem(q);
     });
@@ -371,6 +513,7 @@ const App = {
         })
       });
       const ev = await res.json();
+      if (this.s.quitting) return; // candidate quit while evaluation was in flight
       this.s.problemScore = ev.score ?? 5;
 
       // Log solution in transcript
@@ -394,14 +537,17 @@ const App = {
 
       this.setStatus('speaking');
       VoiceManager.speak(evalSpeech, () => {
+        if (this.s.quitting) return;
         if (!ev.followUpQuestion) {
           this.startListening(); return;
         }
         setTimeout(() => {
+          if (this.s.quitting) return;
           this.renderAIMsg(ev.followUpQuestion);
           this.addEntry('AI Interviewer', ev.followUpQuestion, 'Solution Evaluation');
           this.s.history.push({ role: 'model', parts: [{ text: ev.followUpQuestion }] });
           VoiceManager.speak(ev.followUpQuestion, () => {
+            if (this.s.quitting) return;
             this.startListening();
           });
         }, 700);
@@ -410,7 +556,7 @@ const App = {
     } catch (e) {
       btn.disabled  = false;
       btn.innerHTML = '✔ Submit Solution';
-      this.handleErr(e);
+      if (!this.s.quitting) this.handleErr(e);
     }
   },
 
@@ -466,18 +612,18 @@ const App = {
 
     this.setStatus('listening');
     this.setMic(true, true);
-    this.armSilenceTimer();
+    this.s.lastRecognizedText = '';
+    // Initial grace period: the candidate hasn't said anything yet.
+    this.armSilenceTimer(SILENCE_TIMEOUT_MS);
 
     VoiceManager.listen(
-      finalText => {
-        this.clearSilenceTimer();
-        this.setStatus('thinking');
-        this.handleAnswer(finalText);
-      },
-      interim => {
-        this.armSilenceTimer(); // speech activity — push the silence deadline out
+      text => {
+        this.s.lastRecognizedText = text;
         const el = document.getElementById('status-text');
-        if (el) el.textContent = `"${interim}"`;
+        if (el) el.textContent = `"${text}"`;
+        // They've started answering — from now on only a genuine pause
+        // (not the full initial grace period) should end their turn.
+        this.armSilenceTimer(PAUSE_TIMEOUT_MS);
       },
       err => {
         this.clearSilenceTimer();
@@ -488,13 +634,19 @@ const App = {
     );
   },
 
-  armSilenceTimer() {
+  armSilenceTimer(timeoutMs) {
     this.clearSilenceTimer();
     this.s.silenceTimer = setTimeout(() => {
       if (!VoiceManager.isListening) return;
       VoiceManager.stopListening();
-      this.handleSilence();
-    }, SILENCE_TIMEOUT_MS);
+      const text = (this.s.lastRecognizedText || '').trim();
+      if (text) {
+        this.setStatus('thinking');
+        this.handleAnswer(text);
+      } else {
+        this.handleSilence();
+      }
+    }, timeoutMs);
   },
 
   clearSilenceTimer() {
@@ -528,12 +680,15 @@ const App = {
         '[SYSTEM NOTE: The candidate did not respond within 10 seconds. Briefly acknowledge the silence in one short phrase, then move on — ask a different question next, do not repeat the one they just missed.]',
         /*hidden*/ true
       );
+      if (this.s.quitting) { this.s.isProcessing = false; return; }
+
       this.renderAIMsg(resp.text);
       this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[this.stage]);
 
       this.setStatus('speaking');
       VoiceManager.speak(resp.text, () => {
         this.s.isProcessing = false;
+        if (this.s.quitting) return;
         // Same end-of-interview safeguard as handleAnswer — don't keep
         // re-prompting a silent candidate through further WRAP_UP rounds.
         if (resp.stageComplete || this.stage === 'WRAP_UP') { this.advanceStage(); }
@@ -541,7 +696,7 @@ const App = {
       });
     } catch (e) {
       this.s.isProcessing = false;
-      this.handleErr(e);
+      if (!this.s.quitting) this.handleErr(e);
     }
   },
 
