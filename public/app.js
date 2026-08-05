@@ -110,6 +110,7 @@ const App = {
     silenceTimer:  null,
     lastRecognizedText: '',
     consecutiveSilences: 0,
+    misconductCount: 0,       // number of conduct warnings issued so far this interview
     quitting:      false,
     resumeAnalyzing: false,
     resumeAnalyzed:  false,
@@ -334,6 +335,15 @@ const App = {
       const resp = await this.callChat(text, /*hidden*/ false);
       if (this.s.quitting) { this.s.isProcessing = false; return; }
 
+      // A second offense after an existing warning ends the interview outright —
+      // handled separately below, since it doesn't continue the normal Q&A flow.
+      if (resp.misconductEnd) {
+        this.s.isProcessing = false;
+        await this.endInterviewForMisconduct(resp.text);
+        return;
+      }
+      if (resp.misconductWarning) this.s.misconductCount++;
+
       this.renderAIMsg(resp.text);
       this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[this.stage]);
 
@@ -374,7 +384,8 @@ const App = {
       stage:        this.stage,
       teacherName:  this.s.teacherName,
       subject:      this.s.subject,
-      resumeSummary: this.s.resumeSummary
+      resumeSummary: this.s.resumeSummary,
+      misconductCount: this.s.misconductCount
     };
 
     // Add user turn to local history
@@ -396,7 +407,7 @@ const App = {
     // Add model turn to local history
     this.s.history.push({ role: 'model', parts: [{ text: data.text }] });
 
-    return data; // { text, stageComplete }
+    return data; // { text, stageComplete, misconductWarning, misconductEnd }
   },
 
   // ── Problem Solving (Whiteboard) ───────────────────────────────────────────
@@ -745,6 +756,24 @@ const App = {
 
     this.setStatus('speaking');
     VoiceManager.speak(closing, () => {
+      this.generateReport();
+    });
+  },
+
+  // Called when the candidate used abusive/inappropriate language a second time
+  // after already being warned once (see [MISCONDUCT_END] in the system prompt).
+  // Reuses the `quitting` flag exactly like quitInterview()/endInterviewEarly() so
+  // any in-flight chat/TTS callback from a prior turn is ignored rather than
+  // racing with the report generation this triggers.
+  async endInterviewForMisconduct(closingText) {
+    this.s.quitting = true;
+    this.clearSilenceTimer();
+
+    this.renderAIMsg(closingText);
+    this.addEntry('AI Interviewer', closingText, STAGE_LABELS[this.stage] || 'Wrap Up');
+
+    this.setStatus('speaking');
+    VoiceManager.speak(closingText, () => {
       this.generateReport();
     });
   },

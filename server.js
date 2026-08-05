@@ -135,7 +135,11 @@ STRICT RULES — violating these is unacceptable:
 1. Ask EXACTLY ONE question per response. Never bundle two questions.
 2. Keep every response under 35 words.
 3. Acknowledge the previous answer briefly before asking the next question.
-4. If an answer is vague, probe once more; do not probe endlessly.
+4. Analyze each answer for specifics, depth, and relevance before moving on. If it surfaces an
+   interesting detail, number, or claim worth understanding better, ask ONE targeted follow-up
+   question that digs into it, rather than defaulting to the next generic stage question. If an
+   answer is vague or generic, probe once more for specifics; do not probe more than once on the
+   same point.
 5. When you have enough information for the current stage and are ready to move on,
    end your response with the exact token: [STAGE_COMPLETE]
    — do NOT explain the transition, just emit the token naturally after your closing sentence.
@@ -154,12 +158,63 @@ STRICT RULES — violating these is unacceptable:
    there for how to handle INTRO, EDUCATION, and TRACK_RECORD when resume data is present.`;
 }
 
+// ─── Conduct Monitoring ────────────────────────────────────────────────────────
+// A dedicated, low-temperature classification call, kept entirely separate from
+// the conversational reply. Asking the main chat model to both hold a natural
+// interview conversation AND remember to append a sentinel token on misconduct
+// proved unreliable in testing (the token was frequently dropped once real
+// conversation history was involved) — a single-purpose YES/NO classifier with
+// no other competing instructions is far more consistent.
+async function detectMisconduct(userMessage) {
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.5-flash',
+    generationConfig: { temperature: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
+  });
+
+  const prompt = `You are a content-safety classifier for a job interview transcript. Decide whether the CANDIDATE MESSAGE below contains genuinely abusive language: profanity/swear words, insults or name-calling directed at a person, threats, or harassment.
+
+Do NOT flag a message just because it is:
+- a polite request to speed up, take a break, or wrap up
+- an expression of tiredness, boredom, or mild frustration
+- disagreement, criticism, or negative feedback about the interview or its questions
+- blunt, informal, or terse phrasing that is not insulting
+
+Only answer YES if a reasonable professional would call the message rude, disrespectful, or abusive —
+e.g. it contains a swear word, calls someone an insulting name, or is hostile/threatening in tone.
+
+CANDIDATE MESSAGE: "${userMessage}"
+
+Respond with ONLY one word, exactly: YES or NO.`;
+
+  const result = await model.generateContent(prompt);
+  return result.response.text().trim().toUpperCase().startsWith('YES');
+}
+
 // ─── /api/chat ────────────────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   try {
-    const { history = [], userMessage, stage, teacherName, subject, resumeSummary } = req.body;
+    const { history = [], userMessage, stage, teacherName, subject, resumeSummary, misconductCount = 0 } = req.body;
 
     if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
+
+    if (await detectMisconduct(userMessage)) {
+      if (misconductCount === 0) {
+        // First offense: ask them to cooperate, don't ask an interview question this turn.
+        return res.json({
+          text: `${teacherName ? teacherName + ', please' : 'Please'} keep our conversation respectful and cooperative so we can continue the interview.`,
+          stageComplete: false,
+          misconductWarning: true,
+          misconductEnd: false
+        });
+      }
+      // Already warned once and it happened again — end the interview.
+      return res.json({
+        text: `Thank you for your time${teacherName ? ', ' + teacherName : ''}. We're ending the interview here due to your conduct.`,
+        stageComplete: false,
+        misconductWarning: false,
+        misconductEnd: true
+      });
+    }
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
@@ -174,7 +229,7 @@ app.post('/api/chat', async (req, res) => {
     const stageComplete = fullText.includes('[STAGE_COMPLETE]');
     const text = fullText.replace(/\[STAGE_COMPLETE\]/g, '').trim();
 
-    res.json({ text, stageComplete });
+    res.json({ text, stageComplete, misconductWarning: false, misconductEnd: false });
   } catch (err) {
     console.error('[/api/chat]', err.message);
     res.status(500).json({ error: 'AI response failed', details: err.message });
