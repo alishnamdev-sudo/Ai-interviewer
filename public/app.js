@@ -4,48 +4,36 @@
  */
 
 // ─── Stage Configuration ──────────────────────────────────────────────────────
+// WRAP_UP is reached only as a closing announcement from submitSolution() —
+// the whiteboard problem is the final (7th) question, and the interview
+// concludes immediately once it's submitted, with no further question asked.
 const STAGES = [
   'WELLBEING',
-  'INTRO',
-  'EDUCATION',
-  'TRACK_RECORD',
-  'TEACHING_STYLE',
-  'METHODOLOGY',
+  'RESUME_QA',
   'PROBLEM_SOLVE',
-  'EVALUATION',
   'WRAP_UP'
 ];
 
 const STAGE_LABELS = {
   WELLBEING:     'Well-being Check',
-  INTRO:         'Introduction',
-  EDUCATION:     'Educational Background',
-  TRACK_RECORD:  'Academic Track Record',
-  TEACHING_STYLE:'Teaching Style',
-  METHODOLOGY:   'Teaching Methodology',
+  RESUME_QA:     'Interview Questions',
   PROBLEM_SOLVE: 'Problem Solving',
-  EVALUATION:    'Solution Evaluation',
   WRAP_UP:       'Wrap Up'
 };
 
-// Stage opener prompts (trigger AI to begin the stage naturally). Some accept
-// a `hasResume` flag so the opener steers toward resume-aware follow-ups
-// instead of blindly asking for facts the resume already covers.
+// Number of resume-based questions asked one-by-one during RESUME_QA, before
+// moving on to the whiteboard problem-solving question: 5 general questions
+// plus a 6th always about institutes worked at before the current role and
+// any ranks/toppers produced there (see /api/generate-questions). This is a
+// hard safety cap on top of the server's own count.
+const MAX_RESUME_QUESTIONS = 6;
+
+// Fixed opening line for the one stage that still runs a free-flowing LLM chat.
+// RESUME_QA and PROBLEM_SOLVE have their own dedicated flows (see
+// beginResumeQA/launchProblemSolving), and WRAP_UP is a scripted closing
+// announcement from submitSolution() with no reply expected.
 const STAGE_OPENERS = {
-  WELLBEING:     (name)    => `You are starting the interview. Greet ${name} warmly and ask how they are feeling today. Keep it short.`,
-  INTRO:         (name, hasResume) => hasResume
-    ? `[NEW_STAGE: INTRO] The candidate's resume is attached in your instructions. Briefly reference something specific from it and ask ONE deeper follow-up question about their role or experience — do not re-ask for facts already in the resume.`
-    : `[NEW_STAGE: INTRO] Ask your first question about the teacher's introduction — name, years of experience, or current role.`,
-  EDUCATION:     (name, hasResume) => hasResume
-    ? `[NEW_STAGE: EDUCATION] The candidate's resume is attached in your instructions. If it already lists their degrees/university, ask ONE deeper follow-up (e.g. about their specialization or a relevant project) instead of re-asking basic facts.`
-    : `[NEW_STAGE: EDUCATION] Ask your first question about the teacher's educational background.`,
-  TRACK_RECORD:  (name, hasResume) => hasResume
-    ? `[NEW_STAGE: TRACK_RECORD] The candidate's resume is attached in your instructions. If achievements/ranks/toppers are already listed there, ask ONE deeper follow-up about one of them instead of asking from scratch.`
-    : `[NEW_STAGE: TRACK_RECORD] Ask your first question about the academic ranks or toppers this teacher has produced.`,
-  TEACHING_STYLE:()        => `[NEW_STAGE: TEACHING_STYLE] Ask your first question about how this teacher typically explains complex concepts.`,
-  METHODOLOGY:   ()        => `[NEW_STAGE: METHODOLOGY] Ask your first question about how many Previous Year Questions (PYQs) the teacher covers in each class.`,
-  EVALUATION:    ()        => null, // handled by submitSolution
-  WRAP_UP:       ()        => `[NEW_STAGE: WRAP_UP] Thank the teacher for their time and invite any final thoughts.`,
+  WELLBEING: (name) => `Hi ${name}, welcome to your interview with Vedantu! Before we get started, how are you feeling today?`,
 };
 
 const SUBMIT_BTN_MARKUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Submit Solution';
@@ -61,7 +49,7 @@ const SILENCE_TIMEOUT_MS = 10000;
 // Once the candidate HAS started speaking, a shorter pause is enough to
 // consider their answer complete (they don't need another full 10s grace
 // period every time they take a breath mid-sentence).
-const PAUSE_TIMEOUT_MS = 5000;
+const PAUSE_TIMEOUT_MS = 3000;
 
 // If that happens this many times in a row, end the interview early instead
 // of continuing to prompt an interviewee who isn't responding.
@@ -115,7 +103,9 @@ const App = {
     resumeAnalyzing: false,
     resumeAnalyzed:  false,
     resumeSummary:   null, // summaryText string sent to the AI as resume context
-    resumeInfo:      null  // structured { name, yearsExperience, ... } for the confirmation card
+    resumeInfo:      null, // structured { name, yearsExperience, ... } for the confirmation card
+    resumeQuestions: null, // array of up to MAX_RESUME_QUESTIONS pre-generated questions
+    resumeQIndex:    0     // index into resumeQuestions of the question currently being asked
   },
 
   get stage() { return STAGES[this.s.stageIndex]; },
@@ -296,28 +286,94 @@ const App = {
       return;
     }
 
+    if (stage === 'RESUME_QA') {
+      await this.beginResumeQA();
+      return;
+    }
+
+    // WELLBEING/WRAP_UP openers are fixed, canned lines rather than LLM-generated —
+    // an LLM call here would receive only a bracketed meta-instruction with no real
+    // candidate message to respond to, and models can unreliably echo that
+    // instruction back as prose instead of just speaking the actual line (the exact
+    // failure this replaced). The candidate's actual reply to this line still goes
+    // through the normal LLM chat in handleAnswer.
     const openerFn = STAGE_OPENERS[stage];
-    if (!openerFn) { await this.advanceStage(); return; }
+    const openerText = openerFn ? openerFn(this.s.teacherName) : null;
+    if (!openerText) { await this.advanceStage(); return; }
 
-    const triggerMsg = openerFn(this.s.teacherName, !!this.s.resumeSummary);
-    if (!triggerMsg) { await this.advanceStage(); return; }
+    this.renderAIMsg(openerText);
+    this.addEntry('AI Interviewer', openerText, STAGE_LABELS[stage]);
+    // Keep the model's chat history in sync so its next reply has context for
+    // what was already said, even though this line wasn't itself LLM-generated.
+    // Gemini's chat API requires history to start with a 'user' turn, so seed a
+    // minimal synthetic one ahead of it — it's never rendered or spoken, just
+    // context for the API call.
+    this.s.history.push({ role: 'user', parts: [{ text: `(Interview stage begins: ${stage})` }] });
+    this.s.history.push({ role: 'model', parts: [{ text: openerText }] });
 
+    this.setStatus('speaking');
+    VoiceManager.speak(openerText, () => {
+      if (this.s.quitting) return;
+      this.startListening();
+    });
+  },
+
+  // ── Resume Q&A (exactly-once, no follow-ups) ───────────────────────────────
+  // Fetches (once) the fixed set of 6 resume-aware questions and asks them
+  // strictly one at a time — no LLM follow-ups, no re-probing. This is what
+  // keeps the interview to a bounded question count instead of the open-ended
+  // [STAGE_COMPLETE]-driven chat used by WELLBEING/WRAP_UP. The 6th question
+  // is always about institutes worked at before the current role and any
+  // ranks/toppers produced there (see /api/generate-questions).
+  async beginResumeQA() {
     this.setStatus('thinking');
-
     try {
-      const resp = await this.callChat(triggerMsg, /*hidden*/ true);
-      if (this.s.quitting) return; // candidate quit while this was in flight
-
-      this.renderAIMsg(resp.text);
-      this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[stage]);
-
-      this.setStatus('speaking');
-      VoiceManager.speak(resp.text, () => {
-        if (this.s.quitting) return;
-        if (resp.stageComplete) { this.advanceStage(); }
-        else { this.startListening(); }
-      });
+      if (!this.s.resumeQuestions) {
+        const res = await fetch('/api/generate-questions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            resumeSummary: this.s.resumeSummary,
+            resumeInfo:    this.s.resumeInfo,
+            subject:       this.s.subject,
+            teacherName:   this.s.teacherName
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Could not prepare interview questions');
+        this.s.resumeQuestions = data.questions.slice(0, MAX_RESUME_QUESTIONS);
+      }
+      if (this.s.quitting) return;
+      this.s.resumeQIndex = 0;
+      await this.askResumeQuestion();
     } catch (e) { if (!this.s.quitting) this.handleErr(e); }
+  },
+
+  async askResumeQuestion() {
+    if (this.s.quitting) return;
+    const q = this.s.resumeQuestions[this.s.resumeQIndex];
+    const label = `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`;
+
+    this.renderAIMsg(q);
+    this.addEntry('AI Interviewer', q, label);
+
+    this.setStatus('speaking');
+    VoiceManager.speak(q, () => {
+      if (this.s.quitting) return;
+      this.startListening();
+    });
+  },
+
+  // Moves to the next of the 5 questions, or on to PROBLEM_SOLVE once all
+  // have been asked (regardless of answer quality — no follow-ups here).
+  async advanceResumeQuestion() {
+    if (this.s.quitting) return;
+    this.s.resumeQIndex++;
+    if (this.s.resumeQIndex >= this.s.resumeQuestions.length) {
+      await this.advanceStage();
+    } else {
+      await this.askResumeQuestion();
+    }
   },
 
   async handleAnswer(text) {
@@ -326,8 +382,17 @@ const App = {
     this.setMic(false);
     this.s.consecutiveSilences = 0; // a real answer came in, regardless of entry point — reset the streak
 
+    const label = this.stage === 'RESUME_QA'
+      ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
+      : STAGE_LABELS[this.stage];
     this.renderUserMsg(text);
-    this.addEntry('Teacher', text, STAGE_LABELS[this.stage]);
+    this.addEntry('Teacher', text, label);
+
+    if (this.stage === 'RESUME_QA') {
+      this.s.isProcessing = false;
+      await this.advanceResumeQuestion();
+      return;
+    }
 
     this.setStatus('thinking');
 
@@ -351,10 +416,7 @@ const App = {
       VoiceManager.speak(resp.text, () => {
         this.s.isProcessing = false;
         if (this.s.quitting) return;
-        // WRAP_UP is the last stage — end after this one reply regardless of
-        // whether the model remembered to emit [STAGE_COMPLETE], so the
-        // interview can't loop forever waiting for a token that never comes.
-        if (resp.stageComplete || this.stage === 'WRAP_UP') { this.advanceStage(); }
+        if (resp.stageComplete) { this.advanceStage(); }
         else { this.startListening(); }
       });
     } catch (e) {
@@ -569,33 +631,26 @@ const App = {
       ].filter(Boolean).join(' | ');
       this.addEntry('Teacher (Solution)', summary, 'Problem Solving');
 
-      // Advance to EVALUATION stage
-      this.s.stageIndex = STAGES.indexOf('EVALUATION');
+      // The correctness verdict/feedback is for the admin report only — like the
+      // final report itself, it's never shown or spoken to the candidate. Log it
+      // to the transcript for review only.
+      this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.evaluation} ${ev.feedback}`, 'Solution Evaluation');
+
+      // The whiteboard problem is the final (7th) question of the interview —
+      // it concludes immediately once a solution is submitted, with no further
+      // follow-up question and no "any final thoughts?" prompt.
+      this.s.stageIndex = STAGES.indexOf('WRAP_UP');
       this.showScreen('interview');
       this.updateStageUI();
 
-      // Compose evaluation speech
-      const evalSpeech = `${ev.evaluation} ${ev.feedback}`;
-      this.renderAIMsg(evalSpeech);
-      this.addEntry('AI Interviewer', evalSpeech, 'Solution Evaluation');
-      this.s.history.push({ role: 'model', parts: [{ text: evalSpeech }] });
+      const closing = `Thank you for interviewing with Vedantu, ${this.s.teacherName}. We'll get back to you with a follow-up soon.`;
+      this.renderAIMsg(closing);
+      this.addEntry('AI Interviewer', closing, 'Wrap Up');
 
       this.setStatus('speaking');
-      VoiceManager.speak(evalSpeech, () => {
+      VoiceManager.speak(closing, () => {
         if (this.s.quitting) return;
-        if (!ev.followUpQuestion) {
-          this.startListening(); return;
-        }
-        setTimeout(() => {
-          if (this.s.quitting) return;
-          this.renderAIMsg(ev.followUpQuestion);
-          this.addEntry('AI Interviewer', ev.followUpQuestion, 'Solution Evaluation');
-          this.s.history.push({ role: 'model', parts: [{ text: ev.followUpQuestion }] });
-          VoiceManager.speak(ev.followUpQuestion, () => {
-            if (this.s.quitting) return;
-            this.startListening();
-          });
-        }, 700);
+        this.generateReport();
       });
 
     } catch (e) {
@@ -709,12 +764,21 @@ const App = {
     this.s.isProcessing = true;
     this.setMic(false);
 
-    this.addEntry('Teacher', '[No response — moved on after 10s of silence]', STAGE_LABELS[this.stage]);
+    const label = this.stage === 'RESUME_QA'
+      ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
+      : STAGE_LABELS[this.stage];
+    this.addEntry('Teacher', '[No response — moved on after 10s of silence]', label);
 
     this.s.consecutiveSilences++;
     if (this.s.consecutiveSilences >= MAX_CONSECUTIVE_SILENCES) {
       this.s.isProcessing = false;
       await this.endInterviewEarly();
+      return;
+    }
+
+    if (this.stage === 'RESUME_QA') {
+      this.s.isProcessing = false;
+      await this.advanceResumeQuestion();
       return;
     }
 
@@ -734,9 +798,7 @@ const App = {
       VoiceManager.speak(resp.text, () => {
         this.s.isProcessing = false;
         if (this.s.quitting) return;
-        // Same end-of-interview safeguard as handleAnswer — don't keep
-        // re-prompting a silent candidate through further WRAP_UP rounds.
-        if (resp.stageComplete || this.stage === 'WRAP_UP') { this.advanceStage(); }
+        if (resp.stageComplete) { this.advanceStage(); }
         else { this.startListening(); }
       });
     } catch (e) {

@@ -108,7 +108,7 @@ app.get('/api/admin/reports/:id', requireAdmin, (req, res) => {
 // ─── System Prompt Builder ────────────────────────────────────────────────────
 function buildSystemPrompt(stage, teacherName, subject, resumeSummary) {
   const resumeBlock = resumeSummary
-    ? `\nCANDIDATE RESUME — ALREADY KNOWN, DO NOT RE-ASK:\n${resumeSummary}\n\nThe facts above were extracted from the candidate's uploaded resume before the interview started. Treat every fact stated there as already answered. Never ask a question whose answer is already in this summary (e.g. their name, years of experience, current institute/designation, degrees, universities, specializations, or achievements already listed). Instead, during INTRO, EDUCATION, and TRACK_RECORD, briefly reference what you already know and ask ONE deeper or clarifying follow-up about it (e.g. "I see you've been teaching for 6 years at XYZ — what's been your biggest challenge there?"). If the resume already fully covers a stage's topic with no interesting follow-up needed, keep it to a single brief acknowledgment and move on quickly.\n`
+    ? `\nCANDIDATE RESUME — ALREADY KNOWN, DO NOT RE-ASK:\n${resumeSummary}\n\nThe facts above were extracted from the candidate's uploaded resume before the interview started. Treat every fact stated there as already answered — never ask a question whose answer is already in this summary.\n`
     : '';
 
   return `You are a warm, highly professional interviewer at Vedantu, an Indian ed-tech company, evaluating a teacher's competency for the subject: ${subject}.
@@ -122,14 +122,9 @@ exactly as given above — never shorten, anglicize, or invent a nickname for it
 
 STAGE DESCRIPTIONS:
 - WELLBEING   : Check how the teacher feels today; make them comfortable. 1-2 warm exchanges.
-- INTRO       : Full name (if not known), total years of teaching, current institute and designation.
-- EDUCATION   : Degrees earned, universities attended, year of completion, specialization.
-- TRACK_RECORD: Competitive exam ranks/toppers produced, notable student achievements, number of institutes worked at and for how long.
-- TEACHING_STYLE: How they explain complex concepts, how they handle slow learners, classroom engagement techniques.
-- METHODOLOGY : PYQ (Previous Year Questions) practice — how many per class; theory vs. numericals balance; reference books used in teaching.
+- RESUME_QA   : [This stage asks a fixed set of pre-generated questions directly — do NOT ask about it here]
 - PROBLEM_SOLVE: [This stage is handled by the UI — do NOT ask about it]
-- EVALUATION  : Ask follow-up questions about the problem-solving solution the teacher just submitted.
-- WRAP_UP     : Invite final thoughts; thank the teacher warmly.
+- WRAP_UP     : [This stage is a scripted closing announcement handled by the UI — do NOT ask about it here]
 
 STRICT RULES — violating these is unacceptable:
 1. Ask EXACTLY ONE question per response. Never bundle two questions.
@@ -154,8 +149,16 @@ STRICT RULES — violating these is unacceptable:
    recognition). ALWAYS respond in English yourself, regardless of which language they used —
    your reply is read aloud by an English text-to-speech voice, so it must be plain English text,
    never Hindi/Tamil/Telugu/Marathi script or transliteration.
-9. Never ask about a fact already listed in the CANDIDATE RESUME block above — see the instructions
-   there for how to handle INTRO, EDUCATION, and TRACK_RECORD when resume data is present.`;
+9. Never ask about a fact already listed in the CANDIDATE RESUME block above.
+10. Messages you receive that are wrapped in square brackets (e.g. "[NEW_STAGE: ...]",
+    "[SYSTEM NOTE: ...]") are private stage-direction cues for you alone — the candidate
+    never sees them and did not say them. NEVER quote, paraphrase, restate, or describe
+    these cues back in your reply (e.g. never say things like "invite the teacher to share
+    final thoughts" or "we are now moving to the next stage" or "we're nearing the end of
+    our discussion" as a description of your task). Respond ONLY with the exact natural
+    words you would say out loud to the candidate right now, speaking directly TO them in
+    first/second person — never in third person about them, and never narrating your own
+    intentions or the instructions you were given.`;
 }
 
 // ─── Conduct Monitoring ────────────────────────────────────────────────────────
@@ -227,7 +230,13 @@ app.post('/api/chat', async (req, res) => {
     const fullText = result.response.text().trim();
 
     const stageComplete = fullText.includes('[STAGE_COMPLETE]');
-    const text = fullText.replace(/\[STAGE_COMPLETE\]/g, '').trim();
+    // Defense in depth: even with rule #10 above, the model can occasionally echo
+    // the bracketed private cue it was given (e.g. "[NEW_STAGE: WRAP_UP] ...") back
+    // as part of its reply — strip any such tag so it never reaches the candidate.
+    const text = fullText
+      .replace(/\[STAGE_COMPLETE\]/g, '')
+      .replace(/\[(?:NEW_STAGE|SYSTEM NOTE)[^\]]*\]/gi, '')
+      .trim();
 
     res.json({ text, stageComplete, misconductWarning: false, misconductEnd: false });
   } catch (err) {
@@ -262,6 +271,7 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
   "name": "candidate's full name or null",
   "yearsExperience": "e.g. '6 years' or null",
   "currentInstitute": "current/most recent institute and designation, or null",
+  "previousInstitutes": ["institute(s) the candidate worked at BEFORE their current/most recent role, one string per entry — empty array if the resume only shows one job or doesn't mention earlier employers"],
   "education": ["degree, institution, year — one string per entry"],
   "subjectsTaught": ["subject 1", "subject 2"],
   "achievements": ["notable ranks, toppers produced, awards, or accomplishments — one string per entry"],
@@ -280,6 +290,68 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
   } catch (err) {
     console.error('[/api/parse-resume]', err.message);
     res.status(500).json({ error: 'Could not analyse the resume. Please try a different file.', details: err.message });
+  }
+});
+
+// ─── /api/generate-questions ──────────────────────────────────────────────────
+// Produces the fixed set of 6 resume-aware questions asked one-by-one during
+// the RESUME_QA stage — generated once up front so the interview can't drift
+// into an unbounded number of follow-ups the way the old free-flowing stage
+// chat could. Always exactly 6: 5 general resume/subject questions plus a
+// dedicated 6th about institutes worked at before the current role and any
+// ranks/toppers produced there — asked directly if the resume doesn't cover
+// it, or as a deeper follow-up if it already does.
+const RESUME_QUESTION_COUNT = 6;
+
+app.post('/api/generate-questions', async (req, res) => {
+  try {
+    const { resumeSummary, resumeInfo, subject, teacherName } = req.body;
+    if (!subject) return res.status(400).json({ error: 'subject is required' });
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature: 0.6, maxOutputTokens: 550, thinkingConfig: { thinkingBudget: 0 } }
+    });
+
+    const resumeBlock = resumeSummary
+      ? `CANDIDATE RESUME SUMMARY:\n${resumeSummary}\n`
+      : `No resume summary is available for this candidate — ask general but still subject-relevant questions.\n`;
+
+    const previousInstitutes = Array.isArray(resumeInfo?.previousInstitutes)
+      ? resumeInfo.previousInstitutes.filter(v => typeof v === 'string' && v.trim())
+      : [];
+    const priorInstituteContext = previousInstitutes.length
+      ? `The resume already lists these institute(s) worked at before the current role: ${previousInstitutes.join(', ')}. Since this is partly known, phrase question 6 as a deeper follow-up (e.g. ask specifically about ranks/toppers produced at those institutes) rather than re-asking what institute(s) they were.`
+      : `The resume does not mention any institute(s) the candidate worked at before their current/most recent role — ask question 6 directly since this isn't covered elsewhere.`;
+
+    const promptText = `You are preparing questions for a live spoken interview of ${teacherName || 'a candidate'}, being evaluated as a ${subject} teacher for an Indian ed-tech company (Vedantu).
+
+${resumeBlock}
+Generate EXACTLY ${RESUME_QUESTION_COUNT} interview questions for this specific candidate, in this exact order:
+
+1-5. The five most relevant questions based on their resume and the subject they teach. Prioritise questions that dig into specifics already visible in the resume (e.g. a named institute, an achievement, years of experience, a specialization) rather than generic questions any candidate could be asked. Across these 5, cover a mix of: their background/experience, educational qualifications, track record/achievements, teaching style, and teaching methodology (e.g. PYQ practice, handling slow learners) — skip any topic the resume doesn't support with enough detail to ask something specific about. Never ask about a fact already fully stated in the resume — ask a deeper follow-up about it instead.
+6. ALWAYS include this exact topic as the 6th and final question, regardless of what questions 1-5 cover: ask which institute(s) the candidate worked at before their current/most recent role, and whether they produced any notable exam ranks or toppers there. ${priorInstituteContext}
+
+Rules:
+- Each of the ${RESUME_QUESTION_COUNT} questions must be a single, self-contained question.
+- Keep each question under 30 words, in natural spoken English, professional and warm in tone.
+- Do not number the questions or add any preamble.
+
+Respond ONLY with a JSON array of exactly ${RESUME_QUESTION_COUNT} strings, in the exact order described above, no markdown fences, no extra text.`;
+
+    const result = await model.generateContent(promptText);
+    let raw = result.response.text().trim();
+    raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+
+    let questions = JSON.parse(raw);
+    if (!Array.isArray(questions)) throw new Error('Model did not return a JSON array');
+    questions = questions.filter(q => typeof q === 'string' && q.trim()).slice(0, RESUME_QUESTION_COUNT);
+    if (questions.length === 0) throw new Error('No questions generated');
+
+    res.json({ success: true, questions });
+  } catch (err) {
+    console.error('[/api/generate-questions]', err.message);
+    res.status(500).json({ error: 'Could not prepare interview questions', details: err.message });
   }
 });
 
