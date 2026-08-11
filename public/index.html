@@ -37,6 +37,35 @@
 
     <!-- Form -->
     <div class="form-group">
+      <label for="resume-input">Upload Your Resume / CV <span class="required-mark">*</span></label>
+      <div
+        class="resume-upload"
+        id="resume-upload-zone"
+        onclick="document.getElementById('resume-input').click()"
+        ondragover="App.onResumeDragOver(event)"
+        ondragleave="App.onResumeDragLeave(event)"
+        ondrop="App.onResumeDrop(event)"
+      >
+        <input
+          type="file"
+          id="resume-input"
+          accept=".pdf,.png,.jpg,.jpeg,.txt"
+          onchange="App.onResumeSelected(event)"
+          onclick="event.stopPropagation()"
+          hidden
+        />
+        <svg class="resume-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v5a1 1 0 0 0 1 1h5"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 15h6M9 11h3"/></svg>
+        <div class="resume-upload-copy">
+          <span class="resume-upload-title">Drop your resume here, or <u>browse</u></span>
+          <span id="resume-filename" class="resume-filename">PDF, PNG, JPG or TXT — max 8MB</span>
+        </div>
+      </div>
+      <p id="resume-status" class="field-hint resume-status"></p>
+      <div id="resume-summary-card" class="resume-summary-card hidden"></div>
+      <p class="field-hint">Upload first — we'll auto-fill your name below from it.</p>
+    </div>
+
+    <div class="form-group">
       <label for="teacher-name">Your Full Name</label>
       <div class="input-icon-wrap">
         <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -79,34 +108,6 @@
         </select>
       </div>
       <p class="field-hint">The AI Interviewer will always reply in English.</p>
-    </div>
-
-    <div class="form-group">
-      <label for="resume-input">Upload Your Resume / CV <span class="required-mark">*</span></label>
-      <div
-        class="resume-upload"
-        id="resume-upload-zone"
-        onclick="document.getElementById('resume-input').click()"
-        ondragover="App.onResumeDragOver(event)"
-        ondragleave="App.onResumeDragLeave(event)"
-        ondrop="App.onResumeDrop(event)"
-      >
-        <input
-          type="file"
-          id="resume-input"
-          accept=".pdf,.png,.jpg,.jpeg,.txt"
-          onchange="App.onResumeSelected(event)"
-          onclick="event.stopPropagation()"
-          hidden
-        />
-        <svg class="resume-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v5a1 1 0 0 0 1 1h5"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 15h6M9 11h3"/></svg>
-        <div class="resume-upload-copy">
-          <span class="resume-upload-title">Drop your resume here, or <u>browse</u></span>
-          <span id="resume-filename" class="resume-filename">PDF, PNG, JPG or TXT — max 8MB</span>
-        </div>
-      </div>
-      <p id="resume-status" class="field-hint resume-status"></p>
-      <div id="resume-summary-card" class="resume-summary-card hidden"></div>
     </div>
 
     <button id="start-btn" class="btn-primary" onclick="App.startInterview()">
