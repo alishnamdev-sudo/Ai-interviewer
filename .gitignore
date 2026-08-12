@@ -1,3 +1,5 @@
 node_modules/
 .env
-data/
+data/*
+# The generated JEE/NEET question bank must ship with deployments
+!data/question-bank.json

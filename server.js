@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const store = require('./store');
@@ -437,10 +438,127 @@ Respond with ONLY the acknowledgment sentence, no preamble, no quotation marks.`
   }
 });
 
+// ─── Problem-Solving Question Bank ────────────────────────────────────────────
+// Real JEE/NEET questions (Mathematics, Physics, Chemistry, Biology) generated
+// from the raw PYQ dumps by scripts/build-question-bank.js. Loaded once at
+// startup and served by /api/problem-questions for the whiteboard rounds.
+// Subjects not in the bank (Computer Science, English) — or a missing bank
+// file — are handled client-side by falling back to the small built-in
+// QUESTIONS_DB in public/questions.js.
+const QUESTION_BANK_PATH = path.join(__dirname, 'data', 'question-bank.json');
+const questionBank = {}; // subject -> array of bank entries
+
+try {
+  const { questions } = JSON.parse(fs.readFileSync(QUESTION_BANK_PATH, 'utf8'));
+  for (const q of questions) {
+    (questionBank[q.subject] = questionBank[q.subject] || []).push(q);
+  }
+  console.log(`📚 Question bank loaded: ${questions.length} questions (${Object.entries(questionBank).map(([s, a]) => `${s}: ${a.length}`).join(', ')})`);
+} catch (err) {
+  console.warn('⚠️  data/question-bank.json not found or unreadable — problem-solving rounds will use the built-in question set. Run: node scripts/build-question-bank.js');
+}
+
+// `count` distinct random picks, preferring Medium difficulty (the 90-second
+// whiteboard window suits medium-depth problems) and topping up from the rest
+// of the pool only if there aren't enough Medium questions.
+function pickBankQuestions(pool, count) {
+  const sample = (arr, n) => {
+    const copy = arr.slice();
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy.slice(0, n);
+  };
+
+  const medium = pool.filter(q => q.difficulty === 'Medium');
+  const picked = sample(medium, Math.min(count, medium.length));
+  if (picked.length < count) {
+    const rest = pool.filter(q => q.difficulty !== 'Medium');
+    picked.push(...sample(rest, count - picked.length));
+  }
+  return picked;
+}
+
+// Shapes a bank entry into exactly what the whiteboard UI already renders
+// (same fields as questions.js entries). MCQ options are folded into the
+// question HTML; answer + official solution travel only inside evalContext,
+// which the candidate never sees — it grounds the AI evaluator.
+function toClientQuestion(q) {
+  const optionsHtml = q.options.length
+    ? '<ol class="q-options" type="A">' + q.options.map(o => `<li>${o}</li>`).join('') + '</ol>'
+    : '';
+
+  const evalContext = [
+    `This is a real ${q.exam}${q.year ? ' ' + q.year : ''} exam question${q.options.length ? ' with multiple-choice options (labelled A onward in the order shown)' : ''}.`,
+    `Correct answer: ${q.answer}`,
+    q.solution ? `Official solution (ground truth): ${q.solution}` : null
+  ].filter(Boolean).join('\n');
+
+  return {
+    id: q.id,
+    topic: q.topic,
+    difficulty: q.difficulty,
+    subject: q.subject,
+    hasDiagram: false,
+    question: q.question + optionsHtml,
+    evalContext,
+    // Numericals/derivations: the evaluator grades the full step-by-step
+    // approach, not just the final answer (see /api/evaluate).
+    requiresWork: !!q.requiresWork
+  };
+}
+
+app.get('/api/problem-questions', (req, res) => {
+  const subject = String(req.query.subject || '');
+  const count = Math.min(Math.max(parseInt(req.query.count, 10) || 3, 1), 10);
+
+  const pool = questionBank[subject];
+  if (!pool || !pool.length) {
+    return res.status(404).json({ error: `No bank questions for subject "${subject}"` });
+  }
+
+  res.json({ questions: pickBankQuestions(pool, count).map(toClientQuestion) });
+});
+
+// Best-effort scrub of LaTeX/markup out of text that will be spoken by TTS and
+// shown as plain chat text (the problem-solving follow-up question). The prompt
+// already forbids LaTeX there, but models leak it occasionally — this turns
+// e.g. "O$_{2}^{2-}$" into "O2 2-" and "\frac{u^2}{2g}" into "(u 2 over 2g)"
+// rather than letting raw markup reach the candidate's ears/screen.
+function stripLatexForSpeech(text) {
+  if (!text) return text;
+  let t = String(text);
+  // \frac{a}{b} → (a over b); run a few passes for (rare) nesting
+  for (let i = 0; i < 3; i++) {
+    t = t.replace(/\\[dt]?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '($1 over $2)');
+  }
+  t = t
+    .replace(/\\sqrt\s*\{([^{}]*)\}/g, 'square root of $1')
+    .replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s*\{([^{}]*)\}/g, '$1')
+    .replace(/\\times|\\cdot/g, ' times ')
+    .replace(/\\rightarrow|\\to|\\longrightarrow/g, ' gives ')
+    .replace(/\\leq?\b/g, ' less than or equal to ')
+    .replace(/\\geq?\b/g, ' greater than or equal to ')
+    .replace(/\^\{?\\circ\}?|\\degree/g, ' degrees')
+    // superscripts/subscripts: ^{2-} → " 2-", _{2} → "2", x^2 → "x 2"
+    .replace(/\^\{([^{}]*)\}/g, ' $1')
+    .replace(/_\{([^{}]*)\}/g, '$1')
+    .replace(/\^([A-Za-z0-9+\-])/g, ' $1')
+    .replace(/_([A-Za-z0-9+\-])/g, '$1')
+    // any remaining \command → its bare name (e.g. \pi → pi, \theta → theta)
+    .replace(/\\([A-Za-z]+)/g, '$1')
+    // delimiters and leftover braces
+    .replace(/\$\$?/g, '')
+    .replace(/\\[\[\]()]/g, '')
+    .replace(/[{}]/g, '');
+  return t.replace(/\s{2,}/g, ' ').trim();
+}
+
 // ─── /api/evaluate ────────────────────────────────────────────────────────────
 app.post('/api/evaluate', async (req, res) => {
   try {
-    const { question, subject, imageBase64, dictatedText, evalContext } = req.body;
+    const { question, subject, imageBase64, dictatedText, evalContext, requiresWork } = req.body;
 
     if (!imageBase64 && !dictatedText) {
       return res.json({
@@ -454,7 +572,7 @@ app.post('/api/evaluate', async (req, res) => {
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.4, maxOutputTokens: 400, thinkingConfig: { thinkingBudget: 0 } }
+      generationConfig: { temperature: 0.4, maxOutputTokens: 500, thinkingConfig: { thinkingBudget: 0 } }
     });
 
     let solutionDescription = '';
@@ -466,23 +584,65 @@ app.post('/api/evaluate', async (req, res) => {
     }
 
     const evalContextBlock = evalContext
-      ? `\nGROUND TRUTH (for your evaluation only — the candidate never sees this; the question referenced a diagram they had to read, and this fills in what it showed):\n${evalContext}\n`
+      ? `\nGROUND TRUTH (for your evaluation only — the candidate never sees this; it supplies the correct answer/official solution, or for diagram questions, what the diagram showed):\n${evalContext}\n`
       : '';
+
+    // Numericals/derivations (Maths, Physics, Chemistry) are graded on the
+    // candidate's ENTIRE approach — method choice, setup, intermediate steps,
+    // units, and the final answer — never on the final answer alone. This is a
+    // teacher-competency interview: how they get there is what's being hired.
+    const approachRubric = requiresWork
+      ? `
+This problem requires full detailed working, so evaluate the candidate's ENTIRE approach step by step, not just the final answer:
+- Method/formula choice: did they pick a correct and sensible method for this problem?
+- Setup and substitution: correct equations, correct values/signs/units carried in?
+- Intermediate steps: is the chain of reasoning visible, ordered, and mathematically valid?
+- Final answer: correct value/option, with units or simplification where applicable.
+
+CRITICAL — evaluate ONLY what is actually present in the whiteboard image and/or the transcribed explanation. Never credit a step the candidate did not explicitly show or say: knowing what the correct derivation WOULD be is not evidence they did it. Fill in "workShown" first, strictly from the submission, then score only that.
+
+Scoring rubric (apply strictly):
+- If "workShown" is "none — final answer only", the score MUST be 4 or lower even if the answer is correct — for a teacher, an unexplained answer is a real weakness.
+- A sound, clearly-shown method with a small arithmetic/sign slip near the end scores 6-8.
+- Full marks require both a correct, visible approach AND a correct final answer.
+- A wrong method that happens to land on the right answer must be scored on the method, not the answer.
+In "evaluation", name the specific step(s) that were done well or went wrong (e.g. "correct energy-conservation setup, but the mass was substituted in grams instead of kilograms").
+`
+      : '';
+
+    // The follow-up is read aloud by a text-to-speech voice and shown as plain
+    // chat text — LaTeX or any notation ("O$_{2}^{2-}$", "\\frac{a}{b}") is
+    // unreadable there, so it must be phrased entirely in spoken words.
+    const followUpSpec = `One concise, ${subject}-specific question probing WHY they chose their particular approach or method, or a key step in their reasoning — e.g. 'Why did you use substitution instead of elimination here?' — not a generic question that could apply to any subject. CRITICAL: this question is spoken aloud by a text-to-speech voice and shown as plain text, so it must be plain conversational English with absolutely NO LaTeX, no $ or \\ symbols, no markup, and no sub/superscript notation — say any formula, ion, or expression in words instead (e.g. 'the O two two-minus ion', 'v squared equals u squared minus two g h')`;
+
+    // For requiresWork problems, "workShown" is deliberately the FIRST field:
+    // the model must extract what working is actually visible before it commits
+    // to a score, which stops it crediting steps the candidate never showed.
+    const jsonShape = requiresWork
+      ? `{
+  "workShown": "one sentence listing ONLY the solution steps actually visible in the submission — write exactly 'none — final answer only' if just an answer/option is given with no method",
+  "evaluation": "2-3 sentence honest evaluation of the approach and correctness, naming the specific steps in their working that were right or wrong",
+  "isCorrect": true,
+  "score": 8,
+  "feedback": "One constructive sentence on what could be improved",
+  "followUpQuestion": "${followUpSpec}"
+}`
+      : `{
+  "isCorrect": true,
+  "score": 8,
+  "evaluation": "2-3 sentence honest evaluation of correctness and quality",
+  "feedback": "One constructive sentence on what could be improved",
+  "followUpQuestion": "${followUpSpec}"
+}`;
 
     const promptText = `You are evaluating a ${subject} teacher's solution to a problem, given under 90-second time pressure.
 
 PROBLEM:
 ${question}
-${evalContextBlock}
+${evalContextBlock}${approachRubric}
 ${solutionDescription}
 Evaluate the solution and respond ONLY with the exact JSON object below — no markdown fences, no prose before or after it. This applies even if the image is blank, illegible, or contains no relevant work: in that case still return the JSON with score 0 and explain why in the evaluation field. Never reply with plain text or an apology instead of the JSON.
-{
-  "isCorrect": true,
-  "score": 8,
-  "evaluation": "2-3 sentence honest evaluation of correctness and quality",
-  "feedback": "One constructive sentence on what could be improved",
-  "followUpQuestion": "One concise, ${subject}-specific question probing WHY they chose their particular approach or method, or a key step in their reasoning — e.g. 'Why did you use substitution instead of elimination here?' — not a generic question that could apply to any subject"
-}`;
+${jsonShape}`;
 
     const parts = [{ text: promptText }];
     if (imageBase64) {
@@ -495,6 +655,7 @@ Evaluate the solution and respond ONLY with the exact JSON object below — no m
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
     const parsed = JSON.parse(raw);
+    parsed.followUpQuestion = stripLatexForSpeech(parsed.followUpQuestion);
     res.json(parsed);
   } catch (err) {
     console.error('[/api/evaluate]', err.message);

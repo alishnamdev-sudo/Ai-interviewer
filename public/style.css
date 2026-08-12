@@ -698,6 +698,25 @@ input, select, textarea { font-family: inherit; }
   color: var(--text-primary);
   white-space: pre-line;
 }
+/* MCQ options folded into bank questions (see server.js toClientQuestion) */
+.q-options {
+  margin: 12px 0 0;
+  padding-left: 26px;
+  display: grid;
+  gap: 7px;
+  white-space: normal; /* undo the parent .q-text pre-line for option markup */
+}
+.q-options li {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.q-options li::marker {
+  color: var(--blue);
+  font-weight: 600;
+}
+.q-text .katex { font-size: 1.05em; }
+
 .q-diagram-container {
   margin-top: 12px;
   padding: 12px;
@@ -728,6 +747,7 @@ input, select, textarea { font-family: inherit; }
 }
 .q-tag.blue { border-color: rgba(79,134,247,0.4); color: var(--blue); }
 .q-tag.amber { border-color: rgba(245,158,11,0.4); color: var(--amber); }
+.q-tag.green { border-color: rgba(16,185,129,0.4); color: var(--green); }
 
 /* Whiteboard Toolbar */
 .wb-toolbar {

@@ -691,7 +691,7 @@ const App = {
   // ── Problem Solving (Whiteboard) ───────────────────────────────────────────
   async launchProblemSolving() {
     this.clearSilenceTimer(); // whiteboard uses its own 90s Timer, not this
-    this.s.problemQuestions   = getRandomQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
+    this.s.problemQuestions   = await this._fetchProblemQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
 
@@ -700,7 +700,10 @@ const App = {
     // fires right after the RESUME_QA acknowledgment, whose tone depends on
     // what the candidate just said, so an unconditionally upbeat opener here
     // could clash with e.g. an empathetic reaction to a disappointing answer.
-    const announcement = `Alright, we've had a good conversation. I'd now like to see your ${this.s.subject} problem-solving approach across ${total} questions. You'll have 90 seconds for each — write with a pen or stylus, or speak your solution if you don't have one, and I'll follow up on your approach after each one.`;
+    // Numericals/derivations are graded on the whole approach, so warn the
+    // candidate up front that bare answers won't score well on those.
+    const anyWork = this.s.problemQuestions.some(q => q.requiresWork);
+    const announcement = `Alright, we've had a good conversation. I'd now like to see your ${this.s.subject} problem-solving approach across ${total} questions. You'll have 90 seconds for each — write with a pen or stylus, or speak your solution if you don't have one, and I'll follow up on your approach after each one.${anyWork ? ' Where a question needs a full solution, do show your complete step-by-step working — your method matters as much as the final answer.' : ''}`;
 
     this.renderAIMsg(announcement);
     this.addEntry('AI Interviewer', announcement, 'Problem Solving');
@@ -712,6 +715,24 @@ const App = {
     });
   },
 
+  // Pulls this subject's whiteboard questions from the server's bank of real
+  // JEE/NEET exam questions (/api/problem-questions). Falls back to the small
+  // built-in QUESTIONS_DB (questions.js) when the subject isn't covered by the
+  // bank (Computer Science, English) or the request fails — starting the
+  // problem-solving stage must never be blocked on this.
+  async _fetchProblemQuestions(subject, count) {
+    try {
+      const res = await fetch(`/api/problem-questions?subject=${encodeURIComponent(subject)}&count=${count}`);
+      if (!res.ok) throw new Error('bank returned ' + res.status);
+      const data = await res.json();
+      if (!Array.isArray(data.questions) || !data.questions.length) throw new Error('empty bank response');
+      return data.questions;
+    } catch (e) {
+      console.warn('Question bank unavailable, using built-in questions:', e.message);
+      return getRandomQuestions(subject, count);
+    }
+  },
+
   startProblemRound() {
     if (this.s.quitting) return;
     const q = this.s.problemQuestions[this.s.problemRoundIndex];
@@ -720,12 +741,35 @@ const App = {
     this.renderProblem(q);
   },
 
+  // Typesets any LaTeX in the element ($…$, $$…$$, \(…\), \[…\]) via KaTeX's
+  // auto-render — bank questions from the JEE/NEET dumps are full of it.
+  // No-ops harmlessly for plain-text questions or if the CDN script failed.
+  _renderMath(el) {
+    if (!el || typeof window.renderMathInElement !== 'function') return;
+    try {
+      window.renderMathInElement(el, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '\\[', right: '\\]', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false }
+        ],
+        throwOnError: false
+      });
+    } catch (e) {
+      console.warn('KaTeX render failed:', e);
+    }
+  },
+
   renderProblem(q) {
-    document.getElementById('q-text').innerHTML      = q.question.replace(/\n/g, '<br>');
+    const qText = document.getElementById('q-text');
+    qText.innerHTML = q.question.replace(/\n/g, '<br>');
+    this._renderMath(qText);
     document.getElementById('q-topic').textContent   = q.topic;
     document.getElementById('q-diff').textContent    = q.difficulty;
     document.getElementById('q-subj').textContent    = `${q.subject} · Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length}`;
     document.getElementById('q-diagram-tag').classList.toggle('hidden', !q.hasDiagram);
+    document.getElementById('q-work-tag').classList.toggle('hidden', !q.requiresWork);
 
     // The diagram is part of the question itself (given, to be interpreted) —
     // not something the candidate is asked to draw as their answer.
@@ -861,7 +905,10 @@ const App = {
           // Grounding truth for diagram-based questions — the evaluator never
           // sees the diagram image itself, so this fills in what it needs to
           // check correctness (e.g. what each labelled part actually is).
-          evalContext: this.s.currentQuestion.evalContext || null
+          evalContext: this.s.currentQuestion.evalContext || null,
+          // Numericals/derivations: the evaluator grades the full step-by-step
+          // approach (method, setup, steps, units), not just the final answer.
+          requiresWork: !!this.s.currentQuestion.requiresWork
         })
       });
       const ev = await res.json();
@@ -884,7 +931,7 @@ const App = {
       // The correctness verdict/feedback is for the admin report only — like the
       // final report itself, it's never shown or spoken to the candidate. Log it
       // to the transcript for review only.
-      this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.evaluation} ${ev.feedback}`, roundLabel);
+      this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.workShown ? `Working shown: ${ev.workShown} | ` : ''}${ev.evaluation} ${ev.feedback}`, roundLabel);
 
       this.showScreen('interview');
       this.updateStageUI();

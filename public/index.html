@@ -9,6 +9,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="style.css"/>
+  <!-- KaTeX — typesets the LaTeX in the JEE/NEET question bank (see app.js _renderMath) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous"/>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 
@@ -236,6 +240,7 @@
         <span id="q-topic" class="q-tag blue"></span>
         <span id="q-diff"  class="q-tag"></span>
         <span id="q-diagram-tag" class="q-tag amber hidden" title="This question includes a diagram to interpret">📐 Diagram</span>
+        <span id="q-work-tag" class="q-tag green hidden" title="Your full step-by-step working is evaluated — not just the final answer">✍️ Show full working</span>
       </div>
     </div>
 

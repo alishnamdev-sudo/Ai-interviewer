@@ -1,5 +1,7 @@
-// ─── Question Database ────────────────────────────────────────────────────────
-// Each entry: { id, topic, question, difficulty, subject, hasDiagram, diagramSvg }
+﻿// ─── Question Database ────────────────────────────────────────────────────────
+// Each entry: { id, topic, question, difficulty, subject, hasDiagram, diagramSvg, requiresWork }
+// requiresWork marks numericals/derivations whose evaluation grades the full
+// step-by-step approach (method, setup, steps), not just the final answer.
 // All entries are Medium difficulty by design (see getRandomQuestions, which
 // also enforces this as a filter) — the 90-second whiteboard window suits
 // medium-depth problems, not trivial recall or multi-step hard problems.
@@ -13,6 +15,7 @@ const QUESTIONS_DB = {
   Mathematics: [
     {
       id: 'math_1',
+      requiresWork: true,
       topic: 'Quadratic Equations',
       difficulty: 'Medium',
       subject: 'Mathematics',
@@ -21,6 +24,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'math_2',
+      requiresWork: true,
       topic: 'Trigonometry',
       difficulty: 'Medium',
       subject: 'Mathematics',
@@ -29,6 +33,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'math_3',
+      requiresWork: true,
       topic: 'Differential Calculus',
       difficulty: 'Medium',
       subject: 'Mathematics',
@@ -37,6 +42,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'math_4',
+      requiresWork: true,
       topic: 'Arithmetic Progression',
       difficulty: 'Medium',
       subject: 'Mathematics',
@@ -45,6 +51,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'math_5',
+      requiresWork: true,
       topic: 'Right Triangles',
       difficulty: 'Medium',
       subject: 'Mathematics',
@@ -58,6 +65,7 @@ const QUESTIONS_DB = {
   Physics: [
     {
       id: 'phy_1',
+      requiresWork: true,
       topic: 'Kinematics',
       difficulty: 'Medium',
       subject: 'Physics',
@@ -66,6 +74,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'phy_2',
+      requiresWork: true,
       topic: 'DC Circuits',
       difficulty: 'Medium',
       subject: 'Physics',
@@ -76,6 +85,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'phy_3',
+      requiresWork: true,
       topic: "Newton's Laws",
       difficulty: 'Medium',
       subject: 'Physics',
@@ -87,6 +97,7 @@ const QUESTIONS_DB = {
   Chemistry: [
     {
       id: 'chem_1',
+      requiresWork: true,
       topic: 'Redox Reactions',
       difficulty: 'Medium',
       subject: 'Chemistry',
@@ -95,6 +106,7 @@ const QUESTIONS_DB = {
     },
     {
       id: 'chem_2',
+      requiresWork: true,
       topic: 'Mole Concept',
       difficulty: 'Medium',
       subject: 'Chemistry',
