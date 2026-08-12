@@ -12,7 +12,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const ID_RE = /^[0-9a-f-]+$/i;
 
-function saveReport({ teacherName, subject, problemScore, transcript, report }) {
+function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null }) {
   const id = crypto.randomUUID();
   const record = {
     id,
@@ -21,7 +21,8 @@ function saveReport({ teacherName, subject, problemScore, transcript, report }) 
     subject,
     problemScore,
     transcript,
-    report
+    report,
+    recordingId // data/recordings/<recordingId>.webm, or null if none was captured
   };
   fs.writeFileSync(path.join(DATA_DIR, `${id}.json`), JSON.stringify(record, null, 2));
   return id;

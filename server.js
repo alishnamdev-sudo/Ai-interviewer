@@ -438,6 +438,37 @@ Respond with ONLY the acknowledgment sentence, no preamble, no quotation marks.`
   }
 });
 
+// ─── Interview Recordings ─────────────────────────────────────────────────────
+// The candidate's browser records the whole interview (camera + mic) with
+// MediaRecorder and streams it here in ~10s webm chunks (see public/recorder.js),
+// which are appended in order to data/recordings/<id>.webm. The finished file
+// is linked to the report via recordingId and only ever served back through
+// the password-protected admin endpoint below.
+const RECORDINGS_DIR = path.join(__dirname, 'data', 'recordings');
+fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+
+// Client-generated crypto.randomUUID() — validated strictly since it becomes
+// part of a filename.
+const RECORDING_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+app.post('/api/recording/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
+  const id = String(req.query.id || '');
+  if (!RECORDING_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid recording id' });
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: 'Empty chunk' });
+  }
+  fs.appendFileSync(path.join(RECORDINGS_DIR, `${id}.webm`), req.body);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/recordings/:id', requireAdmin, (req, res) => {
+  const id = String(req.params.id || '');
+  if (!RECORDING_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid recording id' });
+  const file = path.join(RECORDINGS_DIR, `${id}.webm`);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'Recording not found' });
+  res.sendFile(file); // sets video/webm from the extension and honors Range requests
+});
+
 // ─── Problem-Solving Question Bank ────────────────────────────────────────────
 // Real JEE/NEET questions (Mathematics, Physics, Chemistry, Biology) generated
 // from the raw PYQ dumps by scripts/build-question-bank.js. Loaded once at
@@ -711,7 +742,14 @@ Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
 // ─── /api/report ──────────────────────────────────────────────────────────────
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false } = req.body;
+    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null } = req.body;
+
+    // Only attach a recording that actually exists on disk — a made-up id in
+    // the request must not become a broken (or probing) link in the report.
+    const safeRecordingId = (typeof recordingId === 'string'
+      && RECORDING_ID_RE.test(recordingId)
+      && fs.existsSync(path.join(RECORDINGS_DIR, `${recordingId}.webm`)))
+      ? recordingId : null;
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
@@ -801,7 +839,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.conductFlagged = !!endedForMisconduct;
     reportData.misconductCount = misconductCount;
 
-    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData });
+    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId });
 
     // The report itself is never sent back to the candidate's browser — it's
     // only retrievable later through the password-protected /admin dashboard.

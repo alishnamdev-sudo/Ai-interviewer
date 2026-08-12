@@ -198,6 +198,12 @@ const App = {
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
     this._startCameraCapture();
 
+    // Record the full interview (camera video + mic audio), streamed to the
+    // server in chunks as it happens. Requested here, still within the "Begin
+    // Interview" click's permission context. Best-effort: a denied mic or
+    // unsupported browser just means no recording — never a blocked interview.
+    await Recorder.start(this.s.cameraStream);
+
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
@@ -1042,8 +1048,13 @@ const App = {
   // just sees a thank-you screen; results are reviewed later via /admin.
   async generateReport() {
     this._stopCameraCapture();
-    this._releaseCameraStream();
     this.showScreen('loading');
+
+    // Stop the recording and wait for its final chunk to reach the server
+    // BEFORE releasing the camera stream (stopping the tracks would cut the
+    // recorder off mid-chunk). Returns null if recording never ran or failed.
+    const recordingId = await Recorder.stop().catch(() => null);
+    this._releaseCameraStream();
 
     try {
       const res = await fetch('/api/report', {
@@ -1055,7 +1066,8 @@ const App = {
           subject:         this.s.subject,
           problemScore:    this.s.problemScore,
           misconductCount: this.s.misconductCount,
-          endedForMisconduct: this.s.endedForMisconduct
+          endedForMisconduct: this.s.endedForMisconduct,
+          recordingId // links the report to data/recordings/<id>.webm (or null)
         })
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
