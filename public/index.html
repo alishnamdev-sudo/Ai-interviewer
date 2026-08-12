@@ -65,6 +65,14 @@
       <p class="field-hint">Upload first — we'll auto-fill your name below from it.</p>
     </div>
 
+    <!-- Camera access is requested as a native browser permission prompt when
+         "Begin Interview" is clicked (see App.startInterview/_requestCameraAccess)
+         rather than through any visible UI here. These elements only capture
+         periodic frames in the background once granted — never shown to the
+         candidate. -->
+    <video id="camera-preview-video" class="camera-offscreen" autoplay muted playsinline aria-hidden="true"></video>
+    <canvas id="camera-capture-canvas" class="camera-offscreen" aria-hidden="true"></canvas>
+
     <div class="form-group">
       <label for="teacher-name">Your Full Name</label>
       <div class="input-icon-wrap">
@@ -140,6 +148,7 @@
       <span id="stage-label" class="stage-label">Well-being Check</span>
       <div class="stage-bar-right">
         <span class="stage-meta">Vedantu MT AI Interview</span>
+        <span class="camera-active-badge" title="Your camera is on — periodic snapshots are used only to gauge engagement">🎥 Camera On</span>
         <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ Quit Interview</button>
       </div>
     </div>
@@ -212,6 +221,7 @@
         </svg>
         <span id="timer-text" class="timer-text">1:30</span>
       </div>
+      <span class="camera-active-badge" title="Your camera is on — periodic snapshots are used only to gauge engagement">🎥 Camera On</span>
       <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ Quit Interview</button>
     </div>
   </div>
@@ -221,9 +231,11 @@
     <!-- Question strip -->
     <div class="q-card-wb">
       <div id="q-text" class="q-text"></div>
+      <div id="q-diagram-container" class="q-diagram-container hidden" aria-label="Diagram for this question"></div>
       <div class="q-tags">
         <span id="q-topic" class="q-tag blue"></span>
         <span id="q-diff"  class="q-tag"></span>
+        <span id="q-diagram-tag" class="q-tag amber hidden" title="This question includes a diagram to interpret">📐 Diagram</span>
       </div>
     </div>
 

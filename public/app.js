@@ -1,12 +1,12 @@
 /**
  * App — main interview state machine.
- * Depends on: VoiceManager, ReportManager, getRandomQuestion (questions.js)
+ * Depends on: VoiceManager, ReportManager, getRandomQuestions (questions.js)
  */
 
 // ─── Stage Configuration ──────────────────────────────────────────────────────
-// WRAP_UP is reached only as a closing announcement from submitSolution() —
-// the whiteboard problem is the final (7th) question, and the interview
-// concludes immediately once it's submitted, with no further question asked.
+// WRAP_UP is reached only as a closing announcement from _concludeProblemSolving()
+// — once all PROBLEM_SOLVE_QUESTION_COUNT whiteboard rounds are done, the
+// interview concludes immediately with no further question of any kind.
 const STAGES = [
   'WELLBEING',
   'RESUME_QA',
@@ -41,6 +41,11 @@ const SUBMIT_BTN_MARKUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentC
 // ─── Whiteboard Timer ─────────────────────────────────────────────────────────
 const SOLVE_SECONDS = 90;
 
+// Number of distinct problem-solving (whiteboard) questions asked during
+// PROBLEM_SOLVE, each with its own 90-second timer and a spoken follow-up
+// question about the candidate's approach once they submit.
+const PROBLEM_SOLVE_QUESTION_COUNT = 3;
+
 // If the candidate stays silent this long after the AI asks a (non-whiteboard)
 // question — i.e. hasn't started speaking at all — treat it as no-answer and
 // move on rather than waiting forever.
@@ -54,6 +59,19 @@ const PAUSE_TIMEOUT_MS = 3000;
 // If that happens this many times in a row, end the interview early instead
 // of continuing to prompt an interviewee who isn't responding.
 const MAX_CONSECUTIVE_SILENCES = 5;
+
+// A candidate gets up to this many polite warnings for abusive/triggering
+// messages (detected server-side, see /api/check-conduct and /api/chat) before
+// the next flagged message ends the interview outright. Purely a label for
+// warning-count messages here — the actual threshold logic lives server-side
+// in server.js's checkConduct/MAX_CONDUCT_WARNINGS, which this must match.
+const MAX_CONDUCT_WARNINGS = 2;
+
+// ─── Camera (engagement snapshots) ────────────────────────────────────────────
+// How often a webcam frame is grabbed and sent for a brief engagement/attentiveness
+// note — kept infrequent since this is a lightweight qualitative aid for the admin
+// report, not a continuous recording or real-time emotion-detection system.
+const CAMERA_CAPTURE_INTERVAL_MS = 30000;
 
 const Timer = {
   remaining: SOLVE_SECONDS,
@@ -90,6 +108,10 @@ const App = {
     stageIndex:    0,
     history:       [],        // Gemini API history (alternating user/model)
     currentQuestion: null,
+    problemQuestions: null,   // array of PROBLEM_SOLVE_QUESTION_COUNT distinct whiteboard questions for this subject
+    problemRoundIndex: 0,     // index into problemQuestions of the round currently being solved
+    problemScores: [],        // score (0-10) from each round, averaged into problemScore for the report
+    awaitingProblemFollowUp: false, // true while listening for the answer to a problem-solving follow-up question
     problemScore:  0,
     isProcessing:  false,
     startDate:     '',
@@ -99,13 +121,18 @@ const App = {
     lastRecognizedText: '',
     consecutiveSilences: 0,
     misconductCount: 0,       // number of conduct warnings issued so far this interview
+    endedForMisconduct: false, // true only if the interview was actually terminated for conduct —
+                                // a candidate who was warned but behaved afterward is NOT flagged
     quitting:      false,
     resumeAnalyzing: false,
     resumeAnalyzed:  false,
     resumeSummary:   null, // summaryText string sent to the AI as resume context
     resumeInfo:      null, // structured { name, yearsExperience, ... } for the confirmation card
     resumeQuestions: null, // array of up to MAX_RESUME_QUESTIONS pre-generated questions
-    resumeQIndex:    0     // index into resumeQuestions of the question currently being asked
+    resumeQIndex:    0,    // index into resumeQuestions of the question currently being asked
+    cameraEnabled:   false,
+    cameraStream:    null, // active MediaStream from getUserMedia, released once the interview ends
+    cameraCaptureIntervalId: null
   },
 
   get stage() { return STAGES[this.s.stageIndex]; },
@@ -126,22 +153,39 @@ const App = {
       return;
     }
 
-    this.s.teacherName = name;
-    this.s.subject     = subject;
-    this.s.spokenLang  = spokenLang;
-    this.s.startDate   = new Date().toLocaleString('en-IN');
-
     // Recognition listens in whichever language the candidate picked; the AI
     // always speaks back in Indian English (VoiceManager.speak forces this
-    // independent of recognition language — see voice.js).
+    // independent of recognition language — see voice.js). Checked before
+    // requesting camera access so an unsupported browser fails fast without
+    // prompting for a permission that would go unused anyway.
     const { supported } = VoiceManager.init(spokenLang);
     if (!supported) {
       document.getElementById('browser-warning').classList.remove('hidden');
       return;
     }
 
-    document.getElementById('start-btn').disabled = true;
-    document.getElementById('start-btn').textContent = 'Initialising…';
+    const startBtn = document.getElementById('start-btn');
+    const startBtnOriginalHTML = startBtn.innerHTML;
+
+    if (!this.s.cameraEnabled) {
+      startBtn.disabled = true;
+      startBtn.textContent = 'Waiting for camera permission…';
+      const granted = await this._requestCameraAccess();
+      if (!granted) {
+        startBtn.disabled = false;
+        startBtn.innerHTML = startBtnOriginalHTML;
+        this.showToast('Camera access is required to start the interview. Please allow camera permission and try again.', 'warn');
+        return;
+      }
+    }
+
+    this.s.teacherName = name;
+    this.s.subject     = subject;
+    this.s.spokenLang  = spokenLang;
+    this.s.startDate   = new Date().toLocaleString('en-IN');
+
+    startBtn.disabled = true;
+    startBtn.textContent = 'Initialising…';
 
     await VoiceManager.loadVoice();
     if (!VoiceManager.isIndianVoice) {
@@ -152,10 +196,86 @@ const App = {
       this.showToast('No Indian-English voice detected — try Microsoft Edge for authentic pronunciation.', 'info');
     }
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
+    this._startCameraCapture();
 
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
+  },
+
+  // ── Camera Access (periodic engagement snapshots) ─────────────────────────
+  // Permission is requested here — triggered directly by the "Begin Interview"
+  // click, a user gesture — which surfaces the browser's own native camera
+  // permission prompt rather than any custom UI.
+  async _requestCameraAccess() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+      this.s.cameraStream  = stream;
+      this.s.cameraEnabled = true;
+      const video = document.getElementById('camera-preview-video');
+      if (video) video.srcObject = stream;
+      return true;
+    } catch (e) {
+      console.warn('Camera access error:', e);
+      this.s.cameraEnabled = false;
+      return false;
+    }
+  },
+
+  // Grabs the current webcam frame as a JPEG data URL, or null if the camera
+  // isn't ready yet (e.g. the very first tick before video metadata loads).
+  _captureCameraFrame() {
+    const video  = document.getElementById('camera-preview-video');
+    const canvas = document.getElementById('camera-capture-canvas');
+    if (!video || !canvas || !this.s.cameraStream || video.readyState < 2) return null;
+    canvas.width  = video.videoWidth  || 320;
+    canvas.height = video.videoHeight || 240;
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.7);
+  },
+
+  _startCameraCapture() {
+    this._stopCameraCapture();
+    if (!this.s.cameraEnabled) return;
+    this.s.cameraCaptureIntervalId = setInterval(() => this._analyzeCameraFrame(), CAMERA_CAPTURE_INTERVAL_MS);
+  },
+
+  _stopCameraCapture() {
+    if (this.s.cameraCaptureIntervalId) {
+      clearInterval(this.s.cameraCaptureIntervalId);
+      this.s.cameraCaptureIntervalId = null;
+    }
+  },
+
+  // Turns the camera light off once the interview ends — no reason to keep
+  // capturing after the last snapshot is logged.
+  _releaseCameraStream() {
+    if (this.s.cameraStream) {
+      this.s.cameraStream.getTracks().forEach(t => t.stop());
+      this.s.cameraStream = null;
+    }
+  },
+
+  // Fire-and-forget: a failed or slow snapshot analysis should never disrupt
+  // the interview, so errors are swallowed (logged only) rather than surfaced.
+  async _analyzeCameraFrame() {
+    if (this.s.quitting) return;
+    const imageBase64 = this._captureCameraFrame();
+    if (!imageBase64) return;
+
+    const stageLabel = STAGE_LABELS[this.stage] || this.stage;
+    try {
+      const res = await fetch('/api/analyze-expression', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64, stageLabel })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success || this.s.quitting) return;
+      this.addEntry('Camera Analysis (internal — not shown to candidate)', data.notes, stageLabel);
+    } catch (e) {
+      console.warn('Camera analysis error:', e);
+    }
   },
 
   // ── Resume Upload ──────────────────────────────────────────────────────────
@@ -382,6 +502,11 @@ const App = {
     this.setMic(false);
     this.s.consecutiveSilences = 0; // a real answer came in, regardless of entry point — reset the streak
 
+    if (this.s.awaitingProblemFollowUp) {
+      this.s.awaitingProblemFollowUp = false;
+      return this._handleProblemFollowUpAnswer(text);
+    }
+
     const label = this.stage === 'RESUME_QA'
       ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
       : STAGE_LABELS[this.stage];
@@ -389,8 +514,36 @@ const App = {
     this.addEntry('Teacher', text, label);
 
     if (this.stage === 'RESUME_QA') {
-      this.s.isProcessing = false;
-      await this.advanceResumeQuestion();
+      // RESUME_QA doesn't call /api/chat (its questions are pre-generated and
+      // asked deterministically), so it needs its own conduct check — /api/chat's
+      // built-in check never runs for this stage otherwise.
+      this.setStatus('thinking');
+      try {
+        const conduct = await this._checkConduct(text);
+        if (this.s.quitting) { this.s.isProcessing = false; return; }
+        if (await this._handleConductResult(conduct, label)) return;
+
+        // React to what they actually said (e.g. empathetic if they say they
+        // haven't achieved something, warm if they have) rather than silently
+        // jumping to the next question — a flat, disconnected transition would
+        // make the candidate feel unheard.
+        const askedQuestion = this.s.resumeQuestions[this.s.resumeQIndex];
+        const ack = await this._getAcknowledgment(askedQuestion, text);
+        if (this.s.quitting) { this.s.isProcessing = false; return; }
+
+        this.renderAIMsg(ack);
+        this.addEntry('AI Interviewer', ack, label);
+
+        this.setStatus('speaking');
+        VoiceManager.speak(ack, () => {
+          this.s.isProcessing = false;
+          if (this.s.quitting) return;
+          setTimeout(() => { if (!this.s.quitting) this.advanceResumeQuestion(); }, 500);
+        });
+      } catch (e) {
+        this.s.isProcessing = false;
+        if (!this.s.quitting) this.handleErr(e);
+      }
       return;
     }
 
@@ -400,14 +553,19 @@ const App = {
       const resp = await this.callChat(text, /*hidden*/ false);
       if (this.s.quitting) { this.s.isProcessing = false; return; }
 
-      // A second offense after an existing warning ends the interview outright —
-      // handled separately below, since it doesn't continue the normal Q&A flow.
+      // The 3rd flagged offense ends the interview outright — handled
+      // separately below, since it doesn't continue the normal Q&A flow.
       if (resp.misconductEnd) {
         this.s.isProcessing = false;
+        this.s.misconductCount++;
+        this.addEntry('Conduct Flag (internal — not shown to candidate)', `Flagged message ended the interview: "${text}"`, label);
         await this.endInterviewForMisconduct(resp.text);
         return;
       }
-      if (resp.misconductWarning) this.s.misconductCount++;
+      if (resp.misconductWarning) {
+        this.s.misconductCount++;
+        this.addEntry('Conduct Flag (internal — not shown to candidate)', `Flagged message, warning ${this.s.misconductCount} of ${MAX_CONDUCT_WARNINGS}: "${text}"`, label);
+      }
 
       this.renderAIMsg(resp.text);
       this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[this.stage]);
@@ -422,6 +580,64 @@ const App = {
     } catch (e) {
       this.s.isProcessing = false;
       if (!this.s.quitting) this.handleErr(e);
+    }
+  },
+
+  // ── Conduct Monitoring ─────────────────────────────────────────────────────
+  async _checkConduct(text) {
+    const res = await fetch('/api/check-conduct', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userMessage: text, teacherName: this.s.teacherName, misconductCount: this.s.misconductCount })
+    });
+    if (!res.ok) throw new Error('Conduct check failed');
+    return res.json();
+  },
+
+  // Returns true if the turn was consumed by a conduct warning or interview-
+  // ending response (caller should stop rather than continue the normal flow);
+  // false if the answer was clean.
+  async _handleConductResult(conduct, label) {
+    if (!conduct.flagged) return false;
+
+    this.s.misconductCount++;
+
+    if (conduct.misconductEnd) {
+      this.s.isProcessing = false;
+      this.addEntry('Conduct Flag (internal — not shown to candidate)', `Flagged message ended the interview during "${label}"`, label);
+      await this.endInterviewForMisconduct(conduct.text);
+      return true;
+    }
+
+    this.addEntry('Conduct Flag (internal — not shown to candidate)', `Flagged message during "${label}", warning ${this.s.misconductCount} of ${MAX_CONDUCT_WARNINGS}`, label);
+    this.renderAIMsg(conduct.text);
+    this.addEntry('AI Interviewer', conduct.text, label);
+
+    this.setStatus('speaking');
+    VoiceManager.speak(conduct.text, () => {
+      this.s.isProcessing = false;
+      if (this.s.quitting) return;
+      this.startListening(); // give them another chance to answer the same question properly
+    });
+    return true;
+  },
+
+  // Fetches a short, tone-matched reaction to a RESUME_QA answer (e.g.
+  // empathetic if they say they haven't achieved something) — never throws,
+  // since a flat/wrong tone is a UX quality issue, not something that should
+  // ever block the interview from moving to the next question.
+  async _getAcknowledgment(question, answer) {
+    try {
+      const res = await fetch('/api/acknowledge-answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, answer, teacherName: this.s.teacherName })
+      });
+      const data = await res.json();
+      return (data && data.text) || 'Thank you for sharing that.';
+    } catch (e) {
+      console.warn('Acknowledgment error:', e);
+      return 'Thank you for sharing that.';
     }
   },
 
@@ -475,10 +691,16 @@ const App = {
   // ── Problem Solving (Whiteboard) ───────────────────────────────────────────
   async launchProblemSolving() {
     this.clearSilenceTimer(); // whiteboard uses its own 90s Timer, not this
-    const q = getRandomQuestion(this.s.subject);
-    this.s.currentQuestion = q;
+    this.s.problemQuestions   = getRandomQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
+    this.s.problemRoundIndex  = 0;
+    this.s.problemScores      = [];
 
-    const announcement = `Wonderful! We've had a great conversation. I'd now like to see your ${this.s.subject} problem-solving approach. You'll have 90 seconds to solve a problem on the whiteboard — write with a pen or stylus, or speak your solution if you don't have one.`;
+    const total = this.s.problemQuestions.length;
+    // Deliberately tone-neutral (not "Wonderful!") — this fixed line always
+    // fires right after the RESUME_QA acknowledgment, whose tone depends on
+    // what the candidate just said, so an unconditionally upbeat opener here
+    // could clash with e.g. an empathetic reaction to a disappointing answer.
+    const announcement = `Alright, we've had a good conversation. I'd now like to see your ${this.s.subject} problem-solving approach across ${total} questions. You'll have 90 seconds for each — write with a pen or stylus, or speak your solution if you don't have one, and I'll follow up on your approach after each one.`;
 
     this.renderAIMsg(announcement);
     this.addEntry('AI Interviewer', announcement, 'Problem Solving');
@@ -486,16 +708,35 @@ const App = {
 
     VoiceManager.speak(announcement, () => {
       if (this.s.quitting) return;
-      this.showScreen('problem');
-      this.renderProblem(q);
+      this.startProblemRound();
     });
+  },
+
+  startProblemRound() {
+    if (this.s.quitting) return;
+    const q = this.s.problemQuestions[this.s.problemRoundIndex];
+    this.s.currentQuestion = q;
+    this.showScreen('problem');
+    this.renderProblem(q);
   },
 
   renderProblem(q) {
     document.getElementById('q-text').innerHTML      = q.question.replace(/\n/g, '<br>');
     document.getElementById('q-topic').textContent   = q.topic;
     document.getElementById('q-diff').textContent    = q.difficulty;
-    document.getElementById('q-subj').textContent    = q.subject;
+    document.getElementById('q-subj').textContent    = `${q.subject} · Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length}`;
+    document.getElementById('q-diagram-tag').classList.toggle('hidden', !q.hasDiagram);
+
+    // The diagram is part of the question itself (given, to be interpreted) —
+    // not something the candidate is asked to draw as their answer.
+    const diagramContainer = document.getElementById('q-diagram-container');
+    if (q.hasDiagram && q.diagramSvg) {
+      diagramContainer.innerHTML = q.diagramSvg;
+      diagramContainer.classList.remove('hidden');
+    } else {
+      diagramContainer.innerHTML = '';
+      diagramContainer.classList.add('hidden');
+    }
 
     Whiteboard.clear();
     Whiteboard.setTool('pen');
@@ -616,12 +857,21 @@ const App = {
           question:    this.s.currentQuestion.question,
           subject:     this.s.subject,
           imageBase64: hasDrawing ? Whiteboard.exportPNG() : null,
-          dictatedText: dictatedText || null
+          dictatedText: dictatedText || null,
+          // Grounding truth for diagram-based questions — the evaluator never
+          // sees the diagram image itself, so this fills in what it needs to
+          // check correctness (e.g. what each labelled part actually is).
+          evalContext: this.s.currentQuestion.evalContext || null
         })
       });
       const ev = await res.json();
       if (this.s.quitting) return; // candidate quit while evaluation was in flight
-      this.s.problemScore = ev.score ?? 5;
+      this.s.problemScores.push(ev.score ?? 5);
+      // Kept as a single number for backward compatibility with the report
+      // payload — the average across all rounds so far.
+      this.s.problemScore = Math.round(this.s.problemScores.reduce((a, b) => a + b, 0) / this.s.problemScores.length);
+
+      const roundLabel = `Problem Solving (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
 
       // Log solution in transcript
       const summary = [
@@ -629,28 +879,30 @@ const App = {
         dictatedText ? `Dictated: ${dictatedText}` : null,
         (!hasDrawing && !dictatedText) ? '[No solution submitted — time expired]' : null
       ].filter(Boolean).join(' | ');
-      this.addEntry('Teacher (Solution)', summary, 'Problem Solving');
+      this.addEntry('Teacher (Solution)', summary, roundLabel);
 
       // The correctness verdict/feedback is for the admin report only — like the
       // final report itself, it's never shown or spoken to the candidate. Log it
       // to the transcript for review only.
-      this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.evaluation} ${ev.feedback}`, 'Solution Evaluation');
+      this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.evaluation} ${ev.feedback}`, roundLabel);
 
-      // The whiteboard problem is the final (7th) question of the interview —
-      // it concludes immediately once a solution is submitted, with no further
-      // follow-up question and no "any final thoughts?" prompt.
-      this.s.stageIndex = STAGES.indexOf('WRAP_UP');
       this.showScreen('interview');
       this.updateStageUI();
 
-      const closing = `Thank you for interviewing with Vedantu, ${this.s.teacherName}. We'll get back to you with a follow-up soon.`;
-      this.renderAIMsg(closing);
-      this.addEntry('AI Interviewer', closing, 'Wrap Up');
+      const ackText = 'Thank you for sharing your approach.';
+      this.renderAIMsg(ackText);
+      this.addEntry('AI Interviewer', ackText, roundLabel);
+      this.s.history.push({ role: 'user', parts: [{ text: '(Interview stage begins: EVALUATION)' }] });
+      this.s.history.push({ role: 'model', parts: [{ text: ackText }] });
 
       this.setStatus('speaking');
-      VoiceManager.speak(closing, () => {
+      VoiceManager.speak(ackText, () => {
         if (this.s.quitting) return;
-        this.generateReport();
+        if (ev.followUpQuestion) {
+          setTimeout(() => { if (!this.s.quitting) this._askProblemFollowUp(ev.followUpQuestion, roundLabel); }, 700);
+        } else {
+          this._advanceProblemRound();
+        }
       });
 
     } catch (e) {
@@ -660,11 +912,90 @@ const App = {
     }
   },
 
+  // Speaks a probing question about the candidate's reasoning/approach on the
+  // solution they just submitted (e.g. "why did you use X approach here"),
+  // then listens for their answer — this never reveals correctness, only asks
+  // about their thinking, so it's safe to speak aloud unlike the evaluation itself.
+  _askProblemFollowUp(question, roundLabel) {
+    if (this.s.quitting) return;
+    this.renderAIMsg(question);
+    this.addEntry('AI Interviewer', question, roundLabel);
+    this.s.history.push({ role: 'model', parts: [{ text: question }] });
+
+    this.setStatus('speaking');
+    this.s.awaitingProblemFollowUp = true;
+    VoiceManager.speak(question, () => {
+      if (this.s.quitting) return;
+      this.startListening();
+    });
+  },
+
+  // Handles the candidate's spoken answer to a problem-solving follow-up
+  // question — still conduct-checked like every other answer, then moves on
+  // to the next round (or concludes if that was the last one). Dispatched from
+  // handleAnswer() via the awaitingProblemFollowUp flag rather than by stage,
+  // since PROBLEM_SOLVE doesn't otherwise drive conversational turns.
+  async _handleProblemFollowUpAnswer(text) {
+    const roundLabel = `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
+    this.renderUserMsg(text);
+    this.addEntry('Teacher', text, roundLabel);
+
+    this.setStatus('thinking');
+    try {
+      const conduct = await this._checkConduct(text);
+      if (this.s.quitting) { this.s.isProcessing = false; return; }
+      // If flagged-but-warned, _handleConductResult below re-arms startListening()
+      // for a retry — that retry answer must come back here too, not fall through
+      // to RESUME_QA/WELLBEING handling.
+      if (conduct.flagged && !conduct.misconductEnd) this.s.awaitingProblemFollowUp = true;
+      if (await this._handleConductResult(conduct, roundLabel)) return;
+
+      this.s.isProcessing = false;
+      await this._advanceProblemRound();
+    } catch (e) {
+      this.s.isProcessing = false;
+      if (!this.s.quitting) this.handleErr(e);
+    }
+  },
+
+  // Moves to the next problem-solving question, or concludes the interview
+  // once all PROBLEM_SOLVE_QUESTION_COUNT rounds are done.
+  async _advanceProblemRound() {
+    if (this.s.quitting) return;
+    this.s.problemRoundIndex++;
+    if (this.s.problemRoundIndex >= this.s.problemQuestions.length) {
+      await this._concludeProblemSolving();
+    } else {
+      this.startProblemRound();
+    }
+  },
+
+  // All problem-solving rounds are done — the interview concludes immediately
+  // with a short closing statement, no further question of any kind.
+  async _concludeProblemSolving() {
+    if (this.s.quitting) return;
+    this.s.stageIndex = STAGES.indexOf('WRAP_UP');
+    this.showScreen('interview');
+    this.updateStageUI();
+
+    const closing = `Thank you for interviewing with Vedantu, ${this.s.teacherName}. We'll get back to you with a follow-up soon.`;
+    this.renderAIMsg(closing);
+    this.addEntry('AI Interviewer', closing, 'Wrap Up');
+
+    this.setStatus('speaking');
+    VoiceManager.speak(closing, () => {
+      if (this.s.quitting) return;
+      this.generateReport();
+    });
+  },
+
   // ── Report ─────────────────────────────────────────────────────────────────
   // The evaluation report is generated and stored on the server only — it is
   // never sent back to or rendered in the candidate's browser. The candidate
   // just sees a thank-you screen; results are reviewed later via /admin.
   async generateReport() {
+    this._stopCameraCapture();
+    this._releaseCameraStream();
     this.showScreen('loading');
 
     try {
@@ -672,10 +1003,12 @@ const App = {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript:   ReportManager.getPlainTranscript(),
-          teacherName:  this.s.teacherName,
-          subject:      this.s.subject,
-          problemScore: this.s.problemScore
+          transcript:      ReportManager.getPlainTranscript(),
+          teacherName:     this.s.teacherName,
+          subject:         this.s.subject,
+          problemScore:    this.s.problemScore,
+          misconductCount: this.s.misconductCount,
+          endedForMisconduct: this.s.endedForMisconduct
         })
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
@@ -764,15 +1097,24 @@ const App = {
     this.s.isProcessing = true;
     this.setMic(false);
 
-    const label = this.stage === 'RESUME_QA'
-      ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
-      : STAGE_LABELS[this.stage];
+    const label = this.s.awaitingProblemFollowUp
+      ? `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`
+      : this.stage === 'RESUME_QA'
+        ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
+        : STAGE_LABELS[this.stage];
     this.addEntry('Teacher', '[No response — moved on after 10s of silence]', label);
 
     this.s.consecutiveSilences++;
     if (this.s.consecutiveSilences >= MAX_CONSECUTIVE_SILENCES) {
       this.s.isProcessing = false;
       await this.endInterviewEarly();
+      return;
+    }
+
+    if (this.s.awaitingProblemFollowUp) {
+      this.s.awaitingProblemFollowUp = false;
+      this.s.isProcessing = false;
+      await this._advanceProblemRound();
       return;
     }
 
@@ -822,13 +1164,15 @@ const App = {
     });
   },
 
-  // Called when the candidate used abusive/inappropriate language a second time
-  // after already being warned once (see [MISCONDUCT_END] in the system prompt).
-  // Reuses the `quitting` flag exactly like quitInterview()/endInterviewEarly() so
-  // any in-flight chat/TTS callback from a prior turn is ignored rather than
-  // racing with the report generation this triggers.
+  // Called once a candidate's flagged message pushes them past MAX_CONDUCT_WARNINGS
+  // (see checkConduct in server.js) — the candidate has already been warned that
+  // many times and this offense ends the interview outright. Reuses the `quitting`
+  // flag exactly like quitInterview()/endInterviewEarly() so any in-flight
+  // chat/TTS callback from a prior turn is ignored rather than racing with the
+  // report generation this triggers.
   async endInterviewForMisconduct(closingText) {
     this.s.quitting = true;
+    this.s.endedForMisconduct = true; // only this — not a mere warning — gets flagged in the report
     this.clearSilenceTimer();
 
     this.renderAIMsg(closingText);

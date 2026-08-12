@@ -174,7 +174,7 @@ async function detectMisconduct(userMessage) {
     generationConfig: { temperature: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
   });
 
-  const prompt = `You are a content-safety classifier for a job interview transcript. Decide whether the CANDIDATE MESSAGE below contains genuinely abusive language: profanity/swear words, insults or name-calling directed at a person, threats, or harassment.
+  const prompt = `You are a content-safety classifier for a job interview transcript. Decide whether the CANDIDATE MESSAGE below is inappropriate for a professional job interview — either (a) genuinely abusive language: profanity/swear words, insults or name-calling directed at a person, threats, or harassment; or (b) a "triggering" response: content that is deliberately inflammatory, provocative, sexually inappropriate, or discriminatory/hateful.
 
 Do NOT flag a message just because it is:
 - a polite request to speed up, take a break, or wrap up
@@ -182,8 +182,9 @@ Do NOT flag a message just because it is:
 - disagreement, criticism, or negative feedback about the interview or its questions
 - blunt, informal, or terse phrasing that is not insulting
 
-Only answer YES if a reasonable professional would call the message rude, disrespectful, or abusive —
-e.g. it contains a swear word, calls someone an insulting name, or is hostile/threatening in tone.
+Only answer YES if a reasonable professional would call the message rude, disrespectful, abusive, or
+inappropriate for a workplace interview — e.g. it contains a swear word, calls someone an insulting name,
+is hostile/threatening, sexually inappropriate, or discriminatory in tone.
 
 CANDIDATE MESSAGE: "${userMessage}"
 
@@ -193,6 +194,50 @@ Respond with ONLY one word, exactly: YES or NO.`;
   return result.response.text().trim().toUpperCase().startsWith('YES');
 }
 
+// A candidate gets up to 2 polite warnings; the 3rd flagged message ends the
+// interview outright. Shared by /api/chat (WELLBEING/WRAP_UP) and
+// /api/check-conduct (RESUME_QA, and anywhere else a candidate answer needs
+// checking) so the threshold and wording live in exactly one place.
+const MAX_CONDUCT_WARNINGS = 2;
+
+async function checkConduct(userMessage, teacherName, misconductCount) {
+  const flagged = await detectMisconduct(userMessage);
+  if (!flagged) return { flagged: false, text: null, misconductWarning: false, misconductEnd: false };
+
+  if (misconductCount < MAX_CONDUCT_WARNINGS) {
+    return {
+      flagged: true,
+      text: `${teacherName ? teacherName + ', please' : 'Please'} keep our conversation respectful and appropriate so we can continue the interview.`,
+      misconductWarning: true,
+      misconductEnd: false
+    };
+  }
+  // Already warned twice and it happened again — end the interview.
+  return {
+    flagged: true,
+    text: `Thank you for your time${teacherName ? ', ' + teacherName : ''}. We're ending the interview here due to your conduct.`,
+    misconductWarning: false,
+    misconductEnd: true
+  };
+}
+
+// ─── /api/check-conduct ─────────────────────────────────────────────────────────
+// Standalone conduct check for stages that don't route answers through
+// /api/chat — currently RESUME_QA, whose questions are pre-generated and asked
+// deterministically with no per-answer LLM call otherwise.
+app.post('/api/check-conduct', async (req, res) => {
+  try {
+    const { userMessage, teacherName, misconductCount = 0 } = req.body;
+    if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
+
+    const conduct = await checkConduct(userMessage, teacherName, misconductCount);
+    res.json(conduct);
+  } catch (err) {
+    console.error('[/api/check-conduct]', err.message);
+    res.status(500).json({ error: 'Conduct check failed', details: err.message });
+  }
+});
+
 // ─── /api/chat ────────────────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   try {
@@ -200,22 +245,13 @@ app.post('/api/chat', async (req, res) => {
 
     if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
 
-    if (await detectMisconduct(userMessage)) {
-      if (misconductCount === 0) {
-        // First offense: ask them to cooperate, don't ask an interview question this turn.
-        return res.json({
-          text: `${teacherName ? teacherName + ', please' : 'Please'} keep our conversation respectful and cooperative so we can continue the interview.`,
-          stageComplete: false,
-          misconductWarning: true,
-          misconductEnd: false
-        });
-      }
-      // Already warned once and it happened again — end the interview.
+    const conduct = await checkConduct(userMessage, teacherName, misconductCount);
+    if (conduct.flagged) {
       return res.json({
-        text: `Thank you for your time${teacherName ? ', ' + teacherName : ''}. We're ending the interview here due to your conduct.`,
+        text: conduct.text,
         stageComplete: false,
-        misconductWarning: false,
-        misconductEnd: true
+        misconductWarning: conduct.misconductWarning,
+        misconductEnd: conduct.misconductEnd
       });
     }
 
@@ -355,10 +391,56 @@ Respond ONLY with a JSON array of exactly ${RESUME_QUESTION_COUNT} strings, in t
   }
 });
 
+// ─── /api/acknowledge-answer ───────────────────────────────────────────────────
+// Generates a brief, emotionally-appropriate reaction to a RESUME_QA answer
+// before the (already pre-generated) next question is asked — e.g. genuinely
+// empathetic if the candidate says they haven't achieved something, warm if
+// they have — rather than either silence or a generic upbeat "Wonderful!"
+// that doesn't match what they actually said. Kept as its own low-stakes
+// endpoint (separate from the conduct classifier) since a flat/wrong tone
+// here is a UX quality issue, not something that needs to block the interview
+// — on failure it falls back to a safe neutral line rather than erroring out.
+app.post('/api/acknowledge-answer', async (req, res) => {
+  try {
+    const { question, answer, teacherName } = req.body;
+    if (!answer) return res.status(400).json({ error: 'answer is required' });
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature: 0.6, maxOutputTokens: 60, thinkingConfig: { thinkingBudget: 0 } }
+    });
+
+    const promptText = `You are a warm, professional interviewer${teacherName ? ` speaking with ${teacherName}` : ''}. You just asked:
+"${question}"
+
+They answered:
+"${answer}"
+
+Write ONE short, natural spoken acknowledgment (under 20 words) reacting to what they actually said. Match your tone to the content — genuinely empathetic and understanding if the answer is negative or disappointing (e.g. they haven't achieved something, faced a setback, or answered "no"/"none"), warm and appreciative if it's a genuine positive or achievement, or a brief neutral acknowledgment otherwise. Do NOT default to generic enthusiasm like "Wonderful!" or "Great!" unless the answer actually warrants it.
+
+Rules:
+- Do NOT ask a question — a separate question will follow immediately after this.
+- Do NOT repeat their answer back verbatim.
+- Keep it brief and natural, like a real interviewer reacting in the moment.
+
+Respond with ONLY the acknowledgment sentence, no preamble, no quotation marks.`;
+
+    const result = await model.generateContent(promptText);
+    const text = result.response.text().trim().replace(/^"|"$/g, '');
+
+    res.json({ success: true, text: text || 'Thank you for sharing that.' });
+  } catch (err) {
+    console.error('[/api/acknowledge-answer]', err.message);
+    // Graceful fallback — a neutral line that works regardless of what was said,
+    // so a transient API failure never blocks the RESUME_QA flow.
+    res.json({ success: true, text: 'Thank you for sharing that.' });
+  }
+});
+
 // ─── /api/evaluate ────────────────────────────────────────────────────────────
 app.post('/api/evaluate', async (req, res) => {
   try {
-    const { question, subject, imageBase64, dictatedText } = req.body;
+    const { question, subject, imageBase64, dictatedText, evalContext } = req.body;
 
     if (!imageBase64 && !dictatedText) {
       return res.json({
@@ -383,11 +465,15 @@ app.post('/api/evaluate', async (req, res) => {
       solutionDescription += `The teacher also gave this spoken explanation of their solution (transcribed):\n"${dictatedText}"\n`;
     }
 
+    const evalContextBlock = evalContext
+      ? `\nGROUND TRUTH (for your evaluation only — the candidate never sees this; the question referenced a diagram they had to read, and this fills in what it showed):\n${evalContext}\n`
+      : '';
+
     const promptText = `You are evaluating a ${subject} teacher's solution to a problem, given under 90-second time pressure.
 
 PROBLEM:
 ${question}
-
+${evalContextBlock}
 ${solutionDescription}
 Evaluate the solution and respond ONLY with the exact JSON object below — no markdown fences, no prose before or after it. This applies even if the image is blank, illegible, or contains no relevant work: in that case still return the JSON with score 0 and explain why in the evaluation field. Never reply with plain text or an apology instead of the JSON.
 {
@@ -395,7 +481,7 @@ Evaluate the solution and respond ONLY with the exact JSON object below — no m
   "score": 8,
   "evaluation": "2-3 sentence honest evaluation of correctness and quality",
   "feedback": "One constructive sentence on what could be improved",
-  "followUpQuestion": "One concise probing question about their reasoning or approach"
+  "followUpQuestion": "One concise, ${subject}-specific question probing WHY they chose their particular approach or method, or a key step in their reasoning — e.g. 'Why did you use substitution instead of elimination here?' — not a generic question that could apply to any subject"
 }`;
 
     const parts = [{ text: promptText }];
@@ -423,15 +509,71 @@ Evaluate the solution and respond ONLY with the exact JSON object below — no m
   }
 });
 
+// ─── /api/analyze-expression ───────────────────────────────────────────────────
+// Periodic (~30s) webcam snapshot analysis, logged only into the transcript for
+// the admin report — never shown or spoken to the candidate. Deliberately scoped
+// to a single, plain, professional behavioral observation (attentiveness/
+// composure/engagement) rather than clinical or psychological claims, so this
+// stays a lightweight qualitative aid rather than an automated "emotion
+// detection" system.
+app.post('/api/analyze-expression', async (req, res) => {
+  try {
+    const { imageBase64, stageLabel } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: 'imageBase64 is required' });
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature: 0.3, maxOutputTokens: 80, thinkingConfig: { thinkingBudget: 0 } }
+    });
+
+    const promptText = `You are jotting a brief, professional observation note from a single webcam snapshot taken during a job interview (current stage: ${stageLabel || 'Interview'}).
+
+Describe only plainly visible, behavioral cues relevant to engagement in an interview — e.g. eye contact/attentiveness, posture, composure, whether they appear actively engaged or distracted. Keep it to ONE short, neutral sentence.
+
+Do NOT: diagnose or speculate about emotional/mental state, health, or personal characteristics; make any claims about age, gender, ethnicity, or other protected characteristics; use clinical or psychological language. If the frame is blank, unclear, or no face is visible, say so plainly instead of guessing.
+
+Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
+
+    const data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    const parts = [{ text: promptText }, { inlineData: { mimeType: 'image/jpeg', data } }];
+
+    const result = await model.generateContent(parts);
+    const notes = result.response.text().trim();
+
+    res.json({ success: true, notes });
+  } catch (err) {
+    console.error('[/api/analyze-expression]', err.message);
+    res.status(500).json({ error: 'Could not analyse frame', details: err.message });
+  }
+});
+
 // ─── /api/report ──────────────────────────────────────────────────────────────
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore } = req.body;
+    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false } = req.body;
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
       generationConfig: { temperature: 0.5, maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 } }
     });
+
+    // A candidate warned once or twice who then behaved appropriately is NOT
+    // held against them — only an interview actually terminated for repeated
+    // misconduct gets flagged. The transcript's "Conduct Flag" entries are kept
+    // either way (full audit trail for a human reviewer), but the model must be
+    // told explicitly not to penalize mere warnings that didn't escalate.
+    const conductBlock = endedForMisconduct
+      ? `\nCONDUCT FLAG: This interview was ended early because the candidate repeatedly used
+abusive/inappropriate language or gave triggering responses despite warnings (see "Conduct
+Flag" entries in the transcript below). This should weigh negatively on the recommendation,
+and "summary" must explicitly mention that the interview was ended for conduct.\n`
+      : (misconductCount > 0
+          ? `\nNOTE: The transcript below contains "Conduct Flag" entries from earlier in the
+interview where the candidate was warned once or twice about language/tone, but the interview
+completed normally afterward. Do NOT let this affect overallScore, the category scores, the
+recommendation, or the summary — evaluate the candidate purely on the substance of their actual
+answers, exactly as you would if those entries weren't there.\n`
+          : '');
 
     const prompt = `Generate a thorough, fair evaluation report for ${teacherName}, a ${subject} teacher, based on their interview.
 
@@ -439,6 +581,11 @@ FULL INTERVIEW TRANSCRIPT:
 ${transcript}
 
 Problem-Solving Score: ${problemScore}/10
+${conductBlock}
+The transcript above may contain periodic "Camera Analysis" entries — brief, plain
+behavioral observations noted from webcam snapshots taken every ~30 seconds
+throughout the interview. Use these only to inform "engagementNotes" below; do not
+let them influence overallScore or the category scores.
 
 Respond ONLY in this exact JSON format (no markdown fences):
 {
@@ -454,14 +601,45 @@ Respond ONLY in this exact JSON format (no markdown fences):
   ],
   "strengths": ["strength 1", "strength 2", "strength 3"],
   "improvements": ["area for improvement 1", "area for improvement 2"],
-  "recommendation": "Highly Recommended | Recommended | Needs Improvement | Not Recommended"
+  "recommendation": "Highly Recommended | Recommended | Needs Improvement | Not Recommended",
+  "engagementNotes": "1-2 plain sentences summarising overall visible engagement/composure across the Camera Analysis entries in the transcript, or null if the transcript has none"
 }`;
 
-    const result = await model.generateContent(prompt);
-    let raw = result.response.text().trim();
-    raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    // Generation/parsing is isolated in its own try — a transcript containing
+    // genuinely severe abusive language (exactly the case that leads to
+    // endedForMisconduct) is more likely to make the model refuse or reply with
+    // prose instead of JSON. Without this fallback, that failure would mean NO
+    // report is saved at all — silently losing the record for precisely the
+    // candidates most likely to need one flagged.
+    let reportData;
+    try {
+      const result = await model.generateContent(prompt);
+      let raw = result.response.text().trim();
+      raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+      reportData = JSON.parse(raw);
+    } catch (genErr) {
+      console.error('[/api/report] generation/parse failed, saving fallback report:', genErr.message);
+      reportData = {
+        overallScore: 0,
+        summary: endedForMisconduct
+          ? 'This interview was ended early due to repeated inappropriate/abusive conduct. Automated scoring was unavailable for this transcript — please review the transcript manually.'
+          : 'Automated report generation failed for this transcript — please review the transcript manually.',
+        recommendation: endedForMisconduct ? 'Not Recommended' : 'Needs Improvement',
+        categories: [],
+        strengths: [],
+        improvements: [],
+        engagementNotes: null
+      };
+    }
 
-    const reportData = JSON.parse(raw);
+    // Force-set rather than trust the model to include this: a conduct flag on a
+    // hiring evaluation is too significant to depend on the model reliably
+    // echoing it back, so it's set directly from what the client tracked.
+    // Only an interview actually ended for misconduct is flagged — a candidate
+    // warned once or twice who then behaved appropriately is not held against them.
+    reportData.conductFlagged = !!endedForMisconduct;
+    reportData.misconductCount = misconductCount;
+
     const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData });
 
     // The report itself is never sent back to the candidate's browser — it's

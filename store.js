@@ -38,7 +38,8 @@ function listReports() {
         teacherName: record.teacherName,
         subject: record.subject,
         overallScore: record.report?.overallScore ?? null,
-        recommendation: record.report?.recommendation ?? null
+        recommendation: record.report?.recommendation ?? null,
+        conductFlagged: record.report?.conductFlagged ?? false
       };
     })
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));

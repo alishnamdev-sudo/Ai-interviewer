@@ -112,7 +112,7 @@ const Admin = {
       const date = new Date(r.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
       return `
         <tr data-id="${escapeHtml(r.id)}">
-          <td>${escapeHtml(r.teacherName)}</td>
+          <td>${escapeHtml(r.teacherName)} ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}</td>
           <td>${escapeHtml(r.subject)}</td>
           <td>${date}</td>
           <td style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore ?? '—'}</td>
@@ -139,7 +139,7 @@ const Admin = {
   renderReport(record) {
     const container = document.getElementById('report-container');
     const { teacherName, subject, problemScore, createdAt, transcript, report = {} } = record;
-    const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [] } = report;
+    const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
     const date = new Date(createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
@@ -163,6 +163,12 @@ const Admin = {
     const improveItems  = improvements.map(i => `<li>${escapeHtml(i)}</li>`).join('');
 
     container.innerHTML = `
+      ${conductFlagged ? `
+      <div class="conduct-flag-banner">
+        ⚠️ <strong>Conduct flagged</strong> — this interview was ended early after ${misconductCount} incident(s)
+        of abusive/inappropriate language or triggering responses, despite warnings.
+      </div>` : ''}
+
       <div class="report-hero">
         <div>
           <h2 class="report-name">${escapeHtml(teacherName)}</h2>
@@ -208,6 +214,7 @@ const Admin = {
               <ul>${improveItems}</ul>
             </div>
           </div>
+          ${engagementNotes ? `<p class="engagement-note"><strong>🎥 Engagement note (from periodic camera snapshots):</strong> ${escapeHtml(engagementNotes)}</p>` : ''}
         </div>
       </div>
 
