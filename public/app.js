@@ -135,6 +135,10 @@ const App = {
     cameraCaptureIntervalId: null
   },
 
+  // The AI bubble currently being revealed word-by-word in sync with speech:
+  // { spans, revealed } or null (see renderAIMsg/_revealSpokenWords).
+  _live: null,
+
   get stage() { return STAGES[this.s.stageIndex]; },
 
   // ── Setup ──────────────────────────────────────────────────────────────────
@@ -164,6 +168,9 @@ const App = {
       document.getElementById('browser-warning').classList.remove('hidden');
       return;
     }
+
+    // Reveal each AI bubble's words in sync with the spoken audio.
+    VoiceManager.setProgressHook(n => this._revealSpokenWords(n));
 
     const startBtn = document.getElementById('start-btn');
     const startBtnOriginalHTML = startBtn.innerHTML;
@@ -1327,29 +1334,72 @@ const App = {
     });
   },
 
-  renderAIMsg(text) {
-    this._appendMsg('ai', text);
+  // AI messages default to progressive: the bubble appears at full size but
+  // with its words invisible, and each word is revealed as the voice actually
+  // speaks it (driven by VoiceManager's progress hook). Pass progressive=false
+  // for AI lines that are never spoken (e.g. the technical-error notice).
+  renderAIMsg(text, progressive = true) {
+    // A new AI bubble supersedes any still-revealing one.
+    this._completeLiveBubble();
+    const wrap = this._appendMsg('ai', text, progressive);
+    if (progressive && wrap) {
+      this._live = {
+        spans: Array.from(wrap.querySelectorAll('.msg-text .w')),
+        revealed: 0
+      };
+    }
   },
 
   renderUserMsg(text) {
     this._appendMsg('user', text);
   },
 
-  _appendMsg(role, text) {
+  // Reveals AI-bubble words up to `count` (Infinity = all) — fired by
+  // VoiceManager as the audio reaches each word.
+  _revealSpokenWords(count) {
+    const live = this._live;
+    if (!live) return;
+    const upto = Math.min(count, live.spans.length);
+    while (live.revealed < upto) {
+      live.spans[live.revealed++].classList.remove('unspoken');
+    }
+    if (live.revealed >= live.spans.length) this._live = null;
+  },
+
+  _completeLiveBubble() {
+    this._revealSpokenWords(Infinity);
+    this._live = null;
+  },
+
+  _escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  },
+
+  _appendMsg(role, text, hideWords = false) {
     const box = document.getElementById('messages');
-    if (!box) return;
+    if (!box) return null;
+
+    // AI text is split into word spans so it can be revealed in sync with the
+    // spoken audio; hidden words still occupy space, so the bubble keeps its
+    // final size and nothing reflows as words appear.
+    const msgHtml = role === 'ai'
+      ? String(text).trim().split(/\s+/)
+          .map(w => `<span class="w${hideWords ? ' unspoken' : ''}">${this._escapeHtml(w)}</span>`)
+          .join(' ')
+      : this._escapeHtml(text);
 
     const wrap = document.createElement('div');
     wrap.className = `msg-wrap ${role}`;
     wrap.innerHTML = `
       <div class="msg-avatar">${role === 'ai' ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/><path d="M9 8h.01M15 8h.01" stroke-width="2"/></svg>' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>'}</div>
       <div class="msg-bubble">
-        <p class="msg-text">${text}</p>
+        <p class="msg-text">${msgHtml}</p>
       </div>
     `;
     box.appendChild(wrap);
     requestAnimationFrame(() => wrap.classList.add('visible'));
     wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    return wrap;
   },
 
   addEntry(speaker, text, stage) {
@@ -1416,7 +1466,7 @@ const App = {
     this.clearSilenceTimer();
     this.setStatus('idle');
     this.setMic(true);
-    this.renderAIMsg('I apologise, there was a technical issue. Please try again.');
+    this.renderAIMsg('I apologise, there was a technical issue. Please try again.', /*progressive*/ false);
     this.showToast('Connection error — please check the server is running.', 'error');
   }
 };

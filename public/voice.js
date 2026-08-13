@@ -291,14 +291,25 @@ const VoiceManager = (() => {
     return chunks.filter(c => c.length > 0);
   }
 
+  // Optional hook fired while speaking: receives the cumulative number of
+  // words spoken so far across the current line (Infinity = line finished or
+  // interrupted — reveal everything). The app uses this to reveal the AI
+  // bubble's text word-by-word in sync with the audio.
+  let progressHook = null;
+  function setProgressHook(fn) { progressHook = fn; }
+  function emitProgress(n) {
+    if (progressHook) { try { progressHook(n); } catch (_) {} }
+  }
+
   function speak(text, onEnd, onError) {
     if (!text || text.trim().length === 0) {
       if (onEnd) onEnd();
       return;
     }
     // A fresh speak() supersedes anything still in flight — its onEnd (if any)
-    // must not fire once we've moved on.
-    stopSpeaking();
+    // must not fire once we've moved on. cancelSpeech (not stopSpeaking) so the
+    // NEW line's just-rendered bubble isn't snapped to fully-revealed.
+    cancelSpeech();
     _cancelledByCaller = false;
 
     if (ttsEngine === 'sarvam') sarvamSpeak(text.trim(), onEnd, onError);
@@ -307,9 +318,23 @@ const VoiceManager = (() => {
 
   // Sentence-group size used for pipelined Sarvam TTS. Smaller groups mean the
   // first audio arrives sooner (only the first group must be synthesized before
-  // speech starts); prefetch() MUST use the same size or its cache keys won't
-  // match speak()'s.
+  // speech starts).
   const TTS_CHUNK_CHARS = 160;
+
+  // How a line is divided for Sarvam synthesis: the FIRST sentence always goes
+  // alone (synthesis time scales with length, so a short first group minimizes
+  // time-to-first-word), and the rest are grouped up to TTS_CHUNK_CHARS.
+  // prefetch() and sarvamSpeak() MUST share this or cache keys won't match.
+  function ttsGroups(text) {
+    const clean = String(text).trim();
+    if (!clean) return [];
+    const sentences = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+    const first = sentences.shift().trim();
+    const rest = sentences.length
+      ? splitIntoChunks(sentences.join(' ').trim(), TTS_CHUNK_CHARS)
+      : [];
+    return [first, ...rest].filter(c => c && c.trim());
+  }
 
   // Client-side cache: sentence-chunk text -> Promise<string[] base64 WAVs>.
   // Holds prefetched lines (resume questions, canned acks) and recently spoken
@@ -344,37 +369,48 @@ const VoiceManager = (() => {
   // browser engine, which has no synthesis latency to hide).
   function prefetch(text) {
     if (ttsEngine !== 'sarvam' || !text || !text.trim()) return;
-    splitIntoChunks(text.trim(), TTS_CHUNK_CHARS).forEach(chunk => {
+    ttsGroups(text).forEach(chunk => {
       getTtsAudios(chunk).catch(() => {}); // failures fall out of the cache; speak() will retry
     });
   }
 
   function sarvamSpeak(text, onEnd, onError) {
-    const gen = _speakGen; // stopSpeaking() above set the current generation
+    const gen = _speakGen; // cancelSpeech() above set the current generation
     _isSpeaking = true;
     _ttsAbort = new AbortController();
 
     // Pipelined: request every sentence group up front in parallel, then play
     // them in order as they arrive — speech starts once only the FIRST short
     // group is synthesized, instead of after the whole reply.
-    const pending = splitIntoChunks(text, TTS_CHUNK_CHARS)
-      .map(chunk => getTtsAudios(chunk, _ttsAbort.signal));
+    const groups = ttsGroups(text);
+    const pending = groups.map(chunk => getTtsAudios(chunk, _ttsAbort.signal));
 
     (async () => {
       let spokeAnything = false;
+      let baseWords = 0;
       try {
-        for (const p of pending) {
-          const audios = await p;
+        for (let gi = 0; gi < pending.length; gi++) {
+          const audios = await pending[gi];
           if (gen !== _speakGen) return; // superseded/cancelled while fetching
           ttsFailures = 0;
+          const groupWords = groups[gi].trim().split(/\s+/).length;
+          // A group ≤TTS_CHUNK_CHARS comes back as one audio in practice; if
+          // the server ever sub-chunks, spread the words evenly across clips.
+          const perAudio = Math.ceil(groupWords / audios.length);
+          let allocated = 0;
           for (const b64 of audios) {
-            await playOneAudio(b64, gen);
+            const words = Math.min(perAudio, groupWords - allocated);
+            await playOneAudio(b64, gen, { words, baseWords: baseWords + allocated });
             if (gen !== _speakGen) return;
+            allocated += words;
             spokeAnything = true;
           }
+          baseWords += groupWords;
+          emitProgress(baseWords); // snap to the group boundary
         }
         _isSpeaking = false;
         _ttsSource = null;
+        emitProgress(Infinity);
         if (onEnd) onEnd();
       } catch (e) {
         if (gen !== _speakGen) return; // deliberate cancel — stay silent
@@ -385,6 +421,7 @@ const VoiceManager = (() => {
           // browser voice; just end the turn normally.
           _isSpeaking = false;
           _ttsSource = null;
+          emitProgress(Infinity);
           if (onEnd) onEnd();
         } else {
           browserSpeak(text, onEnd, onError);
@@ -396,7 +433,10 @@ const VoiceManager = (() => {
   // Decodes and plays one base64 WAV through WebAudio (the context was
   // unlocked during init's click gesture, so this is autoplay-safe).
   // Resolves when playback ends, is cancelled, or the chunk is undecodable.
-  function playOneAudio(b64, gen) {
+  // reveal: { words, baseWords } — emits word-progress evenly across the
+  // clip's duration (Bulbul returns no word timestamps, but an even spread
+  // over a short sentence group tracks the real cadence closely).
+  function playOneAudio(b64, gen, reveal) {
     return new Promise(resolve => {
       const ctx = ensureCtx();
       const bin = atob(b64);
@@ -409,7 +449,28 @@ const VoiceManager = (() => {
           const src = ctx.createBufferSource();
           src.buffer = buf;
           src.connect(ctx.destination);
-          src.onended = () => resolve(); // also fires on stopSpeaking()'s stop()
+
+          let revealTimer = null;
+          if (reveal && reveal.words > 0) {
+            let shown = 1;
+            emitProgress(reveal.baseWords + 1); // first word appears as audio starts
+            if (reveal.words > 1) {
+              const wordMs = (buf.duration * 1000) / reveal.words;
+              revealTimer = setInterval(() => {
+                if (gen !== _speakGen || shown >= reveal.words) {
+                  clearInterval(revealTimer);
+                  return;
+                }
+                shown++;
+                emitProgress(reveal.baseWords + shown);
+              }, wordMs);
+            }
+          }
+
+          src.onended = () => {
+            if (revealTimer) clearInterval(revealTimer);
+            resolve(); // also fires on stopSpeaking()'s stop()
+          };
           _ttsSource = src;
           src.start();
         })
@@ -422,14 +483,18 @@ const VoiceManager = (() => {
 
     const chunks = splitIntoChunks(text);
     let idx = 0;
+    let baseWords = 0;
 
     function speakNext() {
       if (idx >= chunks.length) {
         _isSpeaking = false;
+        emitProgress(Infinity);
         if (onEnd) onEnd();
         return;
       }
-      const utt = new SpeechSynthesisUtterance(chunks[idx]);
+      const chunkText = chunks[idx];
+      const chunkWords = chunkText.trim().split(/\s+/).length;
+      const utt = new SpeechSynthesisUtterance(chunkText);
       utt.rate = 0.92;
       utt.pitch = 1.05;
       utt.volume = 1.0;
@@ -438,19 +503,46 @@ const VoiceManager = (() => {
       utt.lang = 'en-IN';
       if (selectedVoice) utt.voice = selectedVoice;
 
+      // Word-progress: prefer real boundary events (local voices fire them
+      // with accurate charIndex); network voices often don't, so an estimator
+      // (~140wpm at this rate) paces the reveal until a boundary proves the
+      // engine supports the real thing.
+      let boundarySeen = false;
+      let estShown = 0;
+      let estTimer = setInterval(() => {
+        if (boundarySeen || _cancelledByCaller) { clearInterval(estTimer); estTimer = null; return; }
+        if (estShown < chunkWords) { estShown++; emitProgress(baseWords + estShown); }
+      }, 430);
+      const clearEst = () => { if (estTimer) { clearInterval(estTimer); estTimer = null; } };
+
+      utt.onboundary = e => {
+        if (e.name && e.name !== 'word') return;
+        boundarySeen = true;
+        clearEst();
+        const before = chunkText.slice(0, e.charIndex).trim();
+        const spoken = before ? before.split(/\s+/).length : 0;
+        // The boundary fires as a word STARTS — reveal that word too.
+        emitProgress(baseWords + Math.min(spoken + 1, chunkWords));
+      };
+
       utt.onend = () => {
+        clearEst();
         // Some browsers (notably Chrome) fire 'end' rather than 'error' when an
         // utterance is cut short by speechSynthesis.cancel(), so onerror's
         // _cancelledByCaller check alone isn't reliable — check here too, or a
         // cancelled utterance can still chain into speaking the next chunk.
         if (_cancelledByCaller) { _isSpeaking = false; return; }
+        baseWords += chunkWords;
+        emitProgress(baseWords);
         idx++; speakNext();
       };
       utt.onerror = e => {
+        clearEst();
         _isSpeaking = false;
         // A deliberate interruption (stopSpeaking) means the caller is already
         // taking over — don't also fire the original onEnd/onError and race it.
         if (_cancelledByCaller) return;
+        emitProgress(Infinity);
         if (onError) onError(e);
         else if (onEnd) onEnd();
       };
@@ -460,7 +552,10 @@ const VoiceManager = (() => {
     speakNext();
   }
 
-  function stopSpeaking() {
+  // Halts all speech without touching the progress hook — used internally by
+  // speak() when a new line supersedes the old one (the new bubble must start
+  // hidden, not snapped to fully-revealed).
+  function cancelSpeech() {
     // Sarvam path: invalidate the generation, abort any fetch, stop playback.
     _speakGen++;
     if (_ttsAbort) { try { _ttsAbort.abort(); } catch (_) {} _ttsAbort = null; }
@@ -469,6 +564,13 @@ const VoiceManager = (() => {
     _cancelledByCaller = true;
     window.speechSynthesis.cancel();
     _isSpeaking = false;
+  }
+
+  function stopSpeaking() {
+    cancelSpeech();
+    // Interrupted mid-line (barge-in, quit): snap the bubble to fully revealed
+    // so no half-shown message lingers on screen.
+    emitProgress(Infinity);
   }
 
   // ── Speech Recognition (answer capture) ────────────────────────────────────
@@ -749,6 +851,7 @@ const VoiceManager = (() => {
     loadVoice,
     speak,
     prefetch,
+    setProgressHook,
     stopSpeaking,
     listen,
     finishListening,

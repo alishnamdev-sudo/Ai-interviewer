@@ -1232,3 +1232,7 @@ input, select, textarea { font-family: inherit; }
   .si-list             { grid-template-columns: 1fr; }
   .setup-card          { padding: 32px 24px; }
 }
+
+/* -- Word-by-word reveal while the AI speaks (see App._revealSpokenWords) -- */
+.msg-text .w { transition: opacity 0.18s ease; }
+.msg-text .w.unspoken { opacity: 0; }
