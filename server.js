@@ -48,6 +48,194 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// ─── Sarvam AI Voice (STT + TTS) ──────────────────────────────────────────────
+// Optional cloud voice stack: Saarika (speech-to-text) + Bulbul (text-to-speech)
+// via api.sarvam.ai, proxied through these routes so the API key never reaches
+// the browser. Without SARVAM_API_KEY the client falls back to the browser Web
+// Speech API (see public/voice.js) — the interview still works, just with the
+// old browser-dependent voices and recognition.
+const SARVAM_API_KEY = process.env.SARVAM_API_KEY || '';
+const SARVAM_BASE_URL = 'https://api.sarvam.ai';
+const SARVAM_STT_MODEL = process.env.SARVAM_STT_MODEL || 'saarika:v2.5';
+const SARVAM_TTS_MODEL = process.env.SARVAM_TTS_MODEL || 'bulbul:v3';
+// NOTE: speaker rosters differ per Bulbul version — 'priya' is a bulbul:v3
+// voice; bulbul:v2 uses a different set (anushka, manisha, vidya, ...). A
+// speaker/model mismatch is caught by the auto-pin fallback below.
+const SARVAM_TTS_SPEAKER = process.env.SARVAM_TTS_SPEAKER || 'priya';
+
+// Language codes Saarika accepts directly; anything else is sent as 'unknown'
+// so it auto-detects instead of erroring on an unexpected code.
+const SARVAM_STT_LANGS = new Set([
+  'en-IN', 'hi-IN', 'ta-IN', 'te-IN', 'mr-IN',
+  'bn-IN', 'kn-IN', 'ml-IN', 'gu-IN', 'pa-IN', 'od-IN'
+]);
+
+// If the configured model/speaker is rejected by the API (e.g. a version name
+// this account doesn't have yet), retry once with the known-stable pair and pin
+// that for the rest of the process — one bad env value must not silently
+// degrade every interview to browser voices.
+let sarvamTtsPinned = null;      // { model, speaker } once a fallback succeeds
+let sarvamSttPinnedModel = null; // model string once a fallback succeeds
+
+// In-memory LRU of synthesized audio, keyed by model|speaker|text. Interview
+// scripts repeat a lot of lines across candidates (stage openers, "Thank you
+// for sharing your approach.", conduct warnings), and the client prefetches
+// known-upcoming lines — cache hits make those start instantly and cost
+// nothing against the Sarvam quota.
+const ttsAudioCache = new Map(); // key -> base64 WAV
+const TTS_AUDIO_CACHE_MAX = 300; // ~100-200KB per entry → tens of MB ceiling
+
+async function sarvamTtsChunk(text) {
+  let model = sarvamTtsPinned ? sarvamTtsPinned.model : SARVAM_TTS_MODEL;
+  let speaker = sarvamTtsPinned ? sarvamTtsPinned.speaker : SARVAM_TTS_SPEAKER;
+
+  const cacheKey = () => `${model}|${speaker}|${text}`;
+  const hit = ttsAudioCache.get(cacheKey());
+  if (hit) {
+    // Refresh recency (Map iterates in insertion order, oldest first).
+    ttsAudioCache.delete(cacheKey());
+    ttsAudioCache.set(cacheKey(), hit);
+    return hit;
+  }
+
+  const attempt = () => fetch(`${SARVAM_BASE_URL}/text-to-speech`, {
+    method: 'POST',
+    headers: { 'api-subscription-key': SARVAM_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      // Exactly one of 'text'/'inputs' may be sent — the API rejects both
+      // together, and 'inputs' is the deprecated spelling.
+      text,
+      target_language_code: 'en-IN', // the AI interviewer always speaks English
+      model,
+      speaker,
+      enable_preprocessing: true // normalizes numbers/mixed English for natural reading
+    })
+  });
+
+  let resp = await attempt();
+  if (!resp.ok) {
+    // Read the body exactly once — a Response body can't be read twice.
+    const errBody = await resp.text().catch(() => '');
+    const canRetry = !sarvamTtsPinned && [400, 404, 422].includes(resp.status)
+      && !(model === 'bulbul:v2' && speaker === 'anushka');
+    if (!canRetry) throw new Error(`Sarvam TTS ${resp.status}: ${errBody.slice(0, 300)}`);
+
+    const rejectedPair = `${model}/${speaker}`;
+    model = 'bulbul:v2';
+    speaker = 'anushka';
+    const retry = await attempt();
+    if (!retry.ok) throw new Error(`Sarvam TTS ${resp.status}: ${errBody.slice(0, 300)}`);
+    sarvamTtsPinned = { model, speaker };
+    console.warn(`[sarvam-tts] ${rejectedPair} rejected (${resp.status} ${errBody.slice(0, 200)}) — pinned to bulbul:v2/anushka`);
+    resp = retry;
+  }
+
+  const data = await resp.json();
+  const audio = Array.isArray(data.audios) ? data.audios[0] : data.audio;
+  if (!audio) throw new Error('Sarvam TTS returned no audio');
+
+  ttsAudioCache.set(cacheKey(), audio); // model/speaker here reflect what was actually used
+  if (ttsAudioCache.size > TTS_AUDIO_CACHE_MAX) {
+    ttsAudioCache.delete(ttsAudioCache.keys().next().value);
+  }
+  return audio; // base64 WAV
+}
+
+// Bulbul caps each request at ~500 characters, so longer replies are split on
+// sentence boundaries and synthesized as an ordered list of audio chunks the
+// client plays back-to-back (mirroring how the browser engine already chunks).
+function splitTtsChunks(text, maxLen = 450) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+  if (!clean) return [];
+  const sentences = clean.match(/[^.!?]+[.!?]*/g) || [clean];
+  const chunks = [];
+  let current = '';
+  for (const s of sentences) {
+    if ((current + ' ' + s).trim().length > maxLen && current) {
+      chunks.push(current.trim());
+      current = s;
+    } else {
+      current += ' ' + s;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  // Hard-slice any single sentence that alone exceeds the cap.
+  return chunks.flatMap(c => {
+    const out = [];
+    for (let i = 0; i < c.length; i += maxLen) out.push(c.slice(i, i + maxLen));
+    return out;
+  });
+}
+
+// Tells the client at startup which voice engines to use — no key material,
+// just a capability flag.
+app.get('/api/voice-config', (req, res) => {
+  res.json({ sarvam: !!SARVAM_API_KEY });
+});
+
+app.post('/api/tts', async (req, res) => {
+  try {
+    if (!SARVAM_API_KEY) return res.status(503).json({ error: 'Sarvam TTS not configured' });
+    const chunks = splitTtsChunks(req.body && req.body.text);
+    if (!chunks.length) return res.status(400).json({ error: 'text is required' });
+
+    const audios = await Promise.all(chunks.map(sarvamTtsChunk));
+    res.json({ success: true, audios });
+  } catch (err) {
+    console.error('[/api/tts]', err.message);
+    res.status(502).json({ error: 'TTS failed', details: err.message });
+  }
+});
+
+// Body is the raw WAV the client recorded (see voice.js encodeWav) — forwarded
+// to Saarika as multipart form data.
+app.post('/api/stt', express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '30mb' }), async (req, res) => {
+  try {
+    if (!SARVAM_API_KEY) return res.status(503).json({ error: 'Sarvam STT not configured' });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: 'Empty audio' });
+    }
+
+    const lang = String(req.query.lang || 'en-IN');
+    const attempt = (model) => {
+      const form = new FormData();
+      form.append('file', new Blob([req.body], { type: req.headers['content-type'] || 'audio/wav' }), 'audio.wav');
+      form.append('model', model);
+      form.append('language_code', SARVAM_STT_LANGS.has(lang) ? lang : 'unknown');
+      return fetch(`${SARVAM_BASE_URL}/speech-to-text`, {
+        method: 'POST',
+        headers: { 'api-subscription-key': SARVAM_API_KEY },
+        body: form
+      });
+    };
+
+    let resp = await attempt(sarvamSttPinnedModel || SARVAM_STT_MODEL);
+    if (!resp.ok && !sarvamSttPinnedModel && [400, 404, 422].includes(resp.status) && SARVAM_STT_MODEL !== 'saarika:v2') {
+      const errBody = await resp.text().catch(() => '');
+      const retry = await attempt('saarika:v2');
+      if (retry.ok) {
+        sarvamSttPinnedModel = 'saarika:v2';
+        console.warn(`[sarvam-stt] ${SARVAM_STT_MODEL} rejected (${resp.status} ${errBody.slice(0, 200)}) — pinned to saarika:v2`);
+        resp = retry;
+      }
+    }
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      throw new Error(`Sarvam STT ${resp.status}: ${body.slice(0, 300)}`);
+    }
+
+    const data = await resp.json();
+    res.json({
+      success: true,
+      transcript: String(data.transcript || '').trim(),
+      languageCode: data.language_code || null
+    });
+  } catch (err) {
+    console.error('[/api/stt]', err.message);
+    res.status(502).json({ error: 'STT failed', details: err.message });
+  }
+});
+
 // ─── Admin Auth ────────────────────────────────────────────────────────────────
 // Very small in-memory brute-force guard: 10 attempts per IP per 15 minutes.
 const loginAttempts = new Map();
@@ -853,6 +1041,9 @@ Respond ONLY in this exact JSON format (no markdown fences):
 // ─── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log('\n🎙️  Vedantu MT AI Interview');
+  console.log(SARVAM_API_KEY
+    ? `🗣️  Voice: Sarvam AI (STT ${SARVAM_STT_MODEL}, TTS ${SARVAM_TTS_MODEL} · ${SARVAM_TTS_SPEAKER})`
+    : '🗣️  Voice: browser Web Speech fallback — set SARVAM_API_KEY in .env to enable Sarvam STT/TTS');
   console.log(`🌐  http://localhost:${PORT}`);
   console.log('📋  Press Ctrl+C to stop\n');
 });

@@ -14,6 +14,10 @@ services:
         sync: false
       - key: SESSION_SECRET
         generateValue: true
+      # Sarvam AI voice (Saarika STT + Bulbul TTS). Optional — leave unset to
+      # fall back to browser Web Speech voices.
+      - key: SARVAM_API_KEY
+        sync: false
 
 # NOTE: the free plan has no persistent disk — anything written to data/reports/
 # is lost on restart or redeploy. Fine for testing; before real candidates use

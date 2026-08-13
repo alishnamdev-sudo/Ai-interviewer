@@ -155,10 +155,11 @@ const App = {
 
     // Recognition listens in whichever language the candidate picked; the AI
     // always speaks back in Indian English (VoiceManager.speak forces this
-    // independent of recognition language — see voice.js). Checked before
-    // requesting camera access so an unsupported browser fails fast without
-    // prompting for a permission that would go unused anyway.
-    const { supported } = VoiceManager.init(spokenLang);
+    // independent of recognition language — see voice.js). init() also asks
+    // the server whether the Sarvam voice engines are available. Checked
+    // before requesting camera access so an unsupported browser fails fast
+    // without prompting for a permission that would go unused anyway.
+    const { supported } = await VoiceManager.init(spokenLang);
     if (!supported) {
       document.getElementById('browser-warning').classList.remove('hidden');
       return;
@@ -187,8 +188,16 @@ const App = {
     startBtn.disabled = true;
     startBtn.textContent = 'Initialising…';
 
+    // Start synthesizing the opening line now, while voices load and the
+    // recorder spins up — by the time beginStage() speaks it, the audio is
+    // usually already cached and playback starts instantly.
+    const wellbeingOpener = STAGE_OPENERS.WELLBEING && STAGE_OPENERS.WELLBEING(name);
+    if (wellbeingOpener) VoiceManager.prefetch(wellbeingOpener);
+
     await VoiceManager.loadVoice();
-    if (!VoiceManager.isIndianVoice) {
+    // With Sarvam TTS active the spoken voice is always Indian (Bulbul), so
+    // the browser-voice nudge only applies in browser-fallback mode.
+    if (!VoiceManager.usesSarvamTTS && !VoiceManager.isIndianVoice) {
       // Best-effort only: no Indian-English voice was found on this browser/OS,
       // so names and Indian-context words will come out in a generic accent.
       // Nudge toward Edge, which ships a genuine Indian neural voice (Neerja)
@@ -468,6 +477,9 @@ const App = {
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error || 'Could not prepare interview questions');
         this.s.resumeQuestions = data.questions.slice(0, MAX_RESUME_QUESTIONS);
+        // All questions are known now — synthesize them ahead of time so each
+        // one starts speaking instantly when its turn comes.
+        this.s.resumeQuestions.forEach(q => VoiceManager.prefetch(q));
       }
       if (this.s.quitting) return;
       this.s.resumeQIndex = 0;
@@ -697,6 +709,8 @@ const App = {
   // ── Problem Solving (Whiteboard) ───────────────────────────────────────────
   async launchProblemSolving() {
     this.clearSilenceTimer(); // whiteboard uses its own 90s Timer, not this
+    // Spoken after every solution submission — warm it once up front.
+    VoiceManager.prefetch('Thank you for sharing your approach.');
     this.s.problemQuestions   = await this._fetchProblemQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
@@ -877,9 +891,16 @@ const App = {
   async submitSolution(auto = false) {
     Timer.stop();
     if (this.s.dictating) {
-      VoiceManager.stopDictation();
       this.s.dictating = false;
       document.getElementById('dictate-btn').classList.remove('active');
+      // Sarvam engine: resolves once the final dictated segment has been
+      // transcribed, so s.dictatedText is complete before it's read below.
+      // Immediate for the browser engine.
+      await VoiceManager.stopDictation();
+    } else {
+      // Dictation may have been stopped manually a moment ago with its last
+      // segment still transcribing — wait for that text to land too.
+      await VoiceManager.waitForDictation();
     }
 
     const hasDrawing = Whiteboard.hasContent();
@@ -1055,6 +1076,7 @@ const App = {
     // recorder off mid-chunk). Returns null if recording never ran or failed.
     const recordingId = await Recorder.stop().catch(() => null);
     this._releaseCameraStream();
+    VoiceManager.releaseMic(); // the STT capture stream, separate from the recorder's
 
     try {
       const res = await fetch('/api/report', {
@@ -1109,10 +1131,15 @@ const App = {
     this.armSilenceTimer(SILENCE_TIMEOUT_MS);
 
     VoiceManager.listen(
-      text => {
-        this.s.lastRecognizedText = text;
-        const el = document.getElementById('status-text');
-        if (el) el.textContent = `"${text}"`;
+      update => {
+        // Browser engine: update.text is the live transcript so far. Sarvam
+        // engine: update.text is null (speech is only transcribed once the
+        // answer is complete) but voice activity still lands here.
+        if (update && typeof update.text === 'string') {
+          this.s.lastRecognizedText = update.text;
+          const el = document.getElementById('status-text');
+          if (el) el.textContent = `"${update.text}"`;
+        }
         // They've started answering — from now on only a genuine pause
         // (not the full initial grace period) should end their turn.
         this.armSilenceTimer(PAUSE_TIMEOUT_MS);
@@ -1128,12 +1155,20 @@ const App = {
 
   armSilenceTimer(timeoutMs) {
     this.clearSilenceTimer();
-    this.s.silenceTimer = setTimeout(() => {
+    this.s.silenceTimer = setTimeout(async () => {
       if (!VoiceManager.isListening) return;
-      VoiceManager.stopListening();
-      const text = (this.s.lastRecognizedText || '').trim();
+      // finishListening() stops capture and returns the final transcript —
+      // immediate for the browser engine, a short server round-trip while the
+      // audio is transcribed for Sarvam (hence 'thinking' before awaiting).
+      this.setStatus('thinking');
+      let text = '';
+      try {
+        text = ((await VoiceManager.finishListening()) || '').trim();
+      } catch (e) {
+        console.warn('Transcription error:', e);
+      }
+      if (this.s.quitting) return;
       if (text) {
-        this.setStatus('thinking');
         this.handleAnswer(text);
       } else {
         this.handleSilence();
