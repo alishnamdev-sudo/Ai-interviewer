@@ -223,9 +223,8 @@ const VoiceManager = (() => {
     return Math.sqrt(sum / f32.length);
   }
 
-  // Concatenates captured Float32 frames, downsamples to 16kHz mono 16-bit,
-  // and wraps the result in a WAV header Saarika accepts directly.
-  function encodeWav(chunks, fromRate) {
+  // Downsamples captured Float32 frames to 16kHz mono 16-bit PCM.
+  function downsamplePcm16(chunks, fromRate) {
     let len = 0;
     for (const c of chunks) len += c.length;
     const all = new Float32Array(len);
@@ -245,7 +244,22 @@ const VoiceManager = (() => {
       const v = Math.max(-1, Math.min(1, n ? sum / n : 0));
       pcm[i] = v < 0 ? v * 0x8000 : v * 0x7FFF;
     }
+    return pcm;
+  }
 
+  function pcm16ToBase64(pcm) {
+    const bytes = new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.length * 2);
+    let bin = '';
+    const STEP = 0x8000;
+    for (let i = 0; i < bytes.length; i += STEP) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + STEP));
+    }
+    return btoa(bin);
+  }
+
+  // Wraps the downsampled PCM in a WAV header Saarika's REST API accepts.
+  function encodeWav(chunks, fromRate) {
+    const pcm = downsamplePcm16(chunks, fromRate);
     const buffer = new ArrayBuffer(44 + pcm.length * 2);
     const view = new DataView(buffer);
     const writeStr = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
@@ -573,13 +587,50 @@ const VoiceManager = (() => {
     emitProgress(Infinity);
   }
 
+  // ── Live preview recognition (Sarvam engine only) ──────────────────────────
+  // Sarvam transcribes the answer only once it's complete, so on its own the
+  // candidate gets no feedback while talking. Where the browser has Web Speech
+  // recognition, run it in parallel purely as a LIVE DISPLAY of what's being
+  // heard — its interim text feeds onUpdate for the status line, while the
+  // authoritative transcript still comes from Sarvam in finishListening().
+  function startLivePreview(onText) {
+    if (!recognition) return null;
+    let finalText = '';
+    recognition.onresult = event => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalText += (finalText ? ' ' : '') + t;
+        else interim += t;
+      }
+      const combined = (finalText + ' ' + interim).trim();
+      if (combined && onText) onText({ combined, interim: interim.trim() });
+    };
+    recognition.onerror = () => {}; // preview is best-effort — a failure just freezes the display
+    recognition.onend = () => {
+      // Chrome auto-stops continuous recognition after silence; keep the
+      // preview alive for as long as we're still capturing the answer.
+      if (_isListening && sttEngine === 'sarvam') {
+        try { recognition.start(); } catch (_) {}
+      }
+    };
+    try { recognition.start(); } catch (_) { return null; }
+    return {
+      stop() {
+        recognition.onend = null; // don't auto-restart after a deliberate stop
+        try { recognition.stop(); } catch (_) {}
+      }
+    };
+  }
+
   // ── Speech Recognition (answer capture) ────────────────────────────────────
   // onUpdate(update) fires on voice activity while listening:
   //  - browser engine: update.text is the full accumulated transcript so far
   //    (finals + interims), on every recognition result.
-  //  - Sarvam engine: update.text is null — audio is only transcribed once the
-  //    answer is complete — but every spoken frame still triggers the callback
-  //    so the caller can keep re-arming its pause timer.
+  //  - Sarvam engine: update.text carries the live-preview transcript where
+  //    Web Speech is available (display only — Sarvam's final transcript is
+  //    authoritative), or null when it isn't; every spoken frame triggers the
+  //    callback either way so the caller can keep re-arming its pause timer.
   // The caller decides when the candidate is really done, then calls
   // finishListening() to keep the answer (returns the final transcript) or
   // stopListening() to discard it.
@@ -588,24 +639,100 @@ const VoiceManager = (() => {
 
     if (sttEngine === 'sarvam') {
       _isListening = true;
-      cap = { chunks: [], sampleRate: 48000, hadSpeech: false, capture: null };
+      const c = cap = {
+        chunks: [], sampleRate: 48000, hadSpeech: false, capture: null,
+        preview: null, previewCombined: '', previewInterim: '',
+        // Streaming state: Sarvam's per-utterance transcripts accumulate in
+        // `segments` as the candidate speaks. On any stream failure the batch
+        // REST path in finishListening() takes over using `chunks`.
+        ws: null, wsFailed: false, segments: [],
+        lastSpeechTs: 0, lastDataTs: 0, flushResolve: null
+      };
+
+      // Live display: Sarvam's finalized utterance segments are authoritative;
+      // the browser preview recognizer (word-level, best-effort) fills in the
+      // words of the utterance currently in progress.
+      const updateDisplay = () => {
+        if (!onUpdate || cap !== c) return;
+        const segs = c.segments.join(' ').trim();
+        const display = segs ? (segs + ' ' + c.previewInterim).trim() : c.previewCombined;
+        if (display) onUpdate({ text: display, preview: true });
+      };
+
+      c.preview = startLivePreview(t => {
+        if (cap !== c) return;
+        c.previewCombined = t.combined;
+        c.previewInterim = t.interim;
+        updateDisplay();
+      });
+
+      // Real-time transcription over the server's Sarvam relay.
+      try {
+        const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+        c.ws = new WebSocket(`${proto}${location.host}/api/stt-stream?lang=${encodeURIComponent(recognitionLang)}`);
+        c.ws.onmessage = ev => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'data' && msg.data && msg.data.transcript) {
+              const t = String(msg.data.transcript).trim();
+              if (t) { c.segments.push(t); c.lastDataTs = Date.now(); }
+              if (c.flushResolve) {
+                const r = c.flushResolve;
+                c.flushResolve = null;
+                r();
+              } else {
+                // This utterance is now finalized by Sarvam — the preview's
+                // running text for it is superseded.
+                c.previewInterim = '';
+                c.previewCombined = c.segments.join(' ');
+                updateDisplay();
+              }
+            } else if (msg.type === 'error') {
+              console.warn('Sarvam stream error:', JSON.stringify(msg.data).slice(0, 200));
+              c.wsFailed = true;
+            }
+          } catch (_) {}
+        };
+        c.ws.onerror = () => { c.wsFailed = true; };
+        c.ws.onclose = () => {
+          // Closing while we're still capturing means the stream died early
+          // and may have missed audio — the batch fallback covers the answer.
+          if (_isListening && cap === c) c.wsFailed = true;
+        };
+      } catch (_) {
+        c.wsFailed = true;
+      }
+
       ensureMic()
         .then(stream => {
-          if (!_isListening || !cap) return; // cancelled while awaiting the mic
-          cap.capture = startCapture(stream, frame => {
-            const c = cap;
-            if (!c) return;
+          if (!_isListening || cap !== c) return; // cancelled while awaiting the mic
+          c.capture = startCapture(stream, frame => {
+            if (cap !== c) return;
             c.chunks.push(frame);
             if (frameRms(frame) >= SPEECH_RMS_THRESHOLD) {
               c.hadSpeech = true;
+              c.lastSpeechTs = Date.now();
               if (onUpdate) onUpdate({ text: null });
             }
+            if (c.ws && !c.wsFailed && c.ws.readyState === 1) {
+              try {
+                c.ws.send(JSON.stringify({
+                  audio: {
+                    data: pcm16ToBase64(downsamplePcm16([frame], c.sampleRate)),
+                    sample_rate: String(STT_SAMPLE_RATE),
+                    encoding: 'audio/wav' // literal enum required by the API; real codec is pcm_s16le via the URL
+                  }
+                }));
+              } catch (_) { c.wsFailed = true; }
+            }
           });
-          cap.sampleRate = cap.capture.sampleRate;
+          c.sampleRate = c.capture.sampleRate;
         })
         .catch(e => {
           _isListening = false;
-          cap = null;
+          if (cap === c) cap = null;
+          if (c.preview) c.preview.stop();
+          closeStreamWs(c);
           if (onError) onError(e && e.message ? e.message : 'mic_error');
         });
       return;
@@ -668,10 +795,41 @@ const VoiceManager = (() => {
     const c = cap;
     cap = null;
     if (!c) return '';
+    if (c.preview) c.preview.stop();
     if (c.capture) c.capture.stop();
-    // No voice activity at all — skip the API call (an all-silence clip wastes
-    // quota and can make the model hallucinate a transcript).
-    if (!c.hadSpeech || !c.chunks.length) return '';
+    // No voice activity at all — skip the API calls (an all-silence clip
+    // wastes quota and can make the model hallucinate a transcript).
+    if (!c.hadSpeech || !c.chunks.length) {
+      closeStreamWs(c);
+      return '';
+    }
+
+    // Streaming path first: Sarvam's VAD usually finalized the last utterance
+    // during the caller's silence window, so the transcript is already here.
+    if (c.ws && !c.wsFailed && c.ws.readyState === 1) {
+      const settled = c.segments.length > 0
+        && c.lastDataTs > c.lastSpeechTs
+        && (Date.now() - c.lastSpeechTs) > 2000;
+      if (!settled) {
+        // Ask for whatever is still buffered and give it a moment to arrive.
+        try { c.ws.send(JSON.stringify({ type: 'flush' })); } catch (_) {}
+        await new Promise(res => {
+          c.flushResolve = res;
+          setTimeout(res, 1500);
+        });
+        c.flushResolve = null;
+      }
+      closeStreamWs(c);
+      const text = c.segments.join(' ').trim();
+      if (text) {
+        sttFailures = 0;
+        return text;
+      }
+      // Stream produced nothing despite local voice activity — suspicious;
+      // fall through and let batch STT have the full recording.
+    } else {
+      closeStreamWs(c);
+    }
 
     try {
       const text = await sarvamTranscribe(encodeWav(c.chunks, c.sampleRate));
@@ -687,12 +845,21 @@ const VoiceManager = (() => {
     }
   }
 
+  function closeStreamWs(c) {
+    if (c && c.ws) {
+      try { c.ws.close(); } catch (_) {}
+      c.ws = null;
+    }
+  }
+
   // Cancel/discard: stops capture without transcribing anything.
   function stopListening() {
     if (sttEngine === 'sarvam') {
       _isListening = false;
       if (cap) {
+        if (cap.preview) cap.preview.stop();
         if (cap.capture) cap.capture.stop();
+        closeStreamWs(cap);
         cap = null;
       }
       return;

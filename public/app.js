@@ -1139,9 +1139,10 @@ const App = {
 
     VoiceManager.listen(
       update => {
-        // Browser engine: update.text is the live transcript so far. Sarvam
-        // engine: update.text is null (speech is only transcribed once the
-        // answer is complete) but voice activity still lands here.
+        // update.text is the live transcript so far — from the browser engine
+        // directly, or from the parallel live-preview recognizer in Sarvam
+        // mode (display only; the answer submitted is Sarvam's transcript).
+        // It's null on plain voice-activity pings (Sarvam without Web Speech).
         if (update && typeof update.text === 'string') {
           this.s.lastRecognizedText = update.text;
           const el = document.getElementById('status-text');

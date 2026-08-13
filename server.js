@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { WebSocketServer, WebSocket: SarvamWs } = require('ws');
 const store = require('./store');
 
 const app = express();
@@ -1038,12 +1039,67 @@ Respond ONLY in this exact JSON format (no markdown fences):
   }
 });
 
+// ─── Sarvam streaming STT relay ───────────────────────────────────────────────
+// Real-time transcription: the browser streams 16kHz PCM chunks over this
+// WebSocket and gets Sarvam's per-utterance transcripts back as the candidate
+// speaks (see voice.js). A dumb bidirectional relay — the client speaks
+// Sarvam's own message protocol; this hop exists only to attach the API key,
+// which must never reach the browser. Client-side batch STT (/api/stt) remains
+// the fallback whenever this stream fails.
+const SARVAM_STREAM_STT_MODEL = process.env.SARVAM_STREAM_STT_MODEL || 'saaras:v3';
+
+function attachSttStreamRelay(server) {
+  const wss = new WebSocketServer({ server, path: '/api/stt-stream' });
+  wss.on('connection', (client, req) => {
+    if (!SARVAM_API_KEY) {
+      client.close(1011, 'Sarvam STT not configured');
+      return;
+    }
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const lang = SARVAM_STT_LANGS.has(q.get('lang')) ? q.get('lang') : 'unknown';
+
+    const upstream = new SarvamWs(
+      `wss://api.sarvam.ai/speech-to-text/ws?language-code=${lang}&model=${encodeURIComponent(SARVAM_STREAM_STT_MODEL)}`
+        + '&mode=transcribe&sample_rate=16000&input_audio_codec=pcm_s16le&vad_signals=true',
+      { headers: { 'api-subscription-key': SARVAM_API_KEY } }
+    );
+
+    // Audio arriving before the upstream socket opens is queued, not dropped.
+    const queue = [];
+    upstream.on('open', () => {
+      for (const m of queue) upstream.send(m);
+      queue.length = 0;
+    });
+    client.on('message', data => {
+      const msg = data.toString();
+      if (upstream.readyState === SarvamWs.OPEN) upstream.send(msg);
+      else if (upstream.readyState === SarvamWs.CONNECTING) queue.push(msg);
+    });
+    upstream.on('message', data => {
+      if (client.readyState === client.OPEN) client.send(data.toString());
+    });
+
+    const closeBoth = () => {
+      try { client.close(); } catch (_) {}
+      try { upstream.close(); } catch (_) {}
+    };
+    client.on('close', closeBoth);
+    client.on('error', closeBoth);
+    upstream.on('close', closeBoth);
+    upstream.on('error', err => {
+      console.error('[stt-stream] upstream error:', err.message);
+      closeBoth();
+    });
+  });
+}
+
 // ─── Start ────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log('\n🎙️  Vedantu MT AI Interview');
   console.log(SARVAM_API_KEY
-    ? `🗣️  Voice: Sarvam AI (STT ${SARVAM_STT_MODEL}, TTS ${SARVAM_TTS_MODEL} · ${SARVAM_TTS_SPEAKER})`
+    ? `🗣️  Voice: Sarvam AI (streaming STT ${SARVAM_STREAM_STT_MODEL}, batch STT ${SARVAM_STT_MODEL}, TTS ${SARVAM_TTS_MODEL} · ${SARVAM_TTS_SPEAKER})`
     : '🗣️  Voice: browser Web Speech fallback — set SARVAM_API_KEY in .env to enable Sarvam STT/TTS');
   console.log(`🌐  http://localhost:${PORT}`);
   console.log('📋  Press Ctrl+C to stop\n');
 });
+attachSttStreamRelay(httpServer);
