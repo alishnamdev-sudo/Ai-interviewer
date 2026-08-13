@@ -120,6 +120,38 @@ const VoiceManager = (() => {
     });
   }
 
+  // Unlocks audio playback for the rest of the page session. MUST be called
+  // synchronously from inside a user-gesture handler (the "Begin Interview"
+  // click) — before any `await`. iOS Safari only attributes an AudioContext
+  // resume()/speechSynthesis.speak() call to the gesture that triggered it
+  // when it happens in the same synchronous task; a network round-trip (like
+  // init()'s /api/voice-config fetch) in between is enough to lose that
+  // attribution, leaving audio permanently silent for the rest of the page.
+  // Safe to call even when the eventual engine turns out to be the browser
+  // ones — an idle AudioContext costs nothing, and this also unlocks
+  // speechSynthesis for the Web Speech TTS fallback.
+  function unlockAudio() {
+    if (window.AudioContext || window.webkitAudioContext) {
+      const ctx = ensureCtx();
+      // Some WebKit versions only fully unlock on an actual sound-producing
+      // call, not resume() alone — a silent zero-length buffer satisfies that
+      // without anything audible.
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
+        src.connect(ctx.destination);
+        src.start(0);
+      } catch (_) {}
+    }
+    if (window.speechSynthesis) {
+      try {
+        const u = new SpeechSynthesisUtterance('');
+        u.volume = 0;
+        window.speechSynthesis.speak(u);
+      } catch (_) {}
+    }
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────────
   // lang: BCP-47 code for the language the CANDIDATE will speak in
   // (e.g. 'en-IN', 'hi-IN', 'ta-IN', 'te-IN', 'mr-IN'), fixed for the
@@ -140,9 +172,10 @@ const VoiceManager = (() => {
     if (sarvamAvailable && mediaOk) {
       sttEngine = 'sarvam';
       ttsEngine = 'sarvam';
-      // Created here, inside the "Begin Interview" click gesture, so the
-      // context starts unlocked and later playback never hits the browser's
-      // autoplay policy.
+      // Safety net only — the real unlock must happen synchronously in the
+      // click handler itself (see unlockAudio()). By the time we get here
+      // we've already awaited a network round trip, which is too late for
+      // iOS Safari to still attribute this call to the user gesture.
       ensureCtx();
     } else {
       sttEngine = 'browser';
@@ -1015,6 +1048,7 @@ const VoiceManager = (() => {
   // ── Public API ─────────────────────────────────────────────────────────────
   return {
     init,
+    unlockAudio,
     loadVoice,
     speak,
     prefetch,

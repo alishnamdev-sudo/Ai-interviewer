@@ -629,16 +629,34 @@ Respond with ONLY the acknowledgment sentence, no preamble, no quotation marks.`
 
 // ─── Interview Recordings ─────────────────────────────────────────────────────
 // The candidate's browser records the whole interview (camera + mic) with
-// MediaRecorder and streams it here in ~10s webm chunks (see public/recorder.js),
-// which are appended in order to data/recordings/<id>.webm. The finished file
-// is linked to the report via recordingId and only ever served back through
-// the password-protected admin endpoint below.
+// MediaRecorder and streams it here in ~10s chunks (see public/recorder.js),
+// appended in order to data/recordings/<id>.<ext>. The finished file is linked
+// to the report via recordingId and only ever served back through the
+// password-protected admin endpoint below.
+//
+// The container is webm everywhere EXCEPT iOS Safari, which has no webm
+// MediaRecorder support at all and produces mp4 instead — recorder.js detects
+// this client-side and tells us which extension to use via ?ext=, so an
+// iOS-recorded interview doesn't get silently saved as a broken .webm file.
 const RECORDINGS_DIR = path.join(__dirname, 'data', 'recordings');
 fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
 // Client-generated crypto.randomUUID() — validated strictly since it becomes
 // part of a filename.
 const RECORDING_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RECORDING_EXTS = ['webm', 'mp4'];
+
+// A recording's extension is fixed for its whole session (set by the first
+// chunk) — later chunks find the existing file regardless of what ?ext= they
+// carry, so a client sending an unexpected value mid-stream never splits one
+// recording across two files.
+function findRecordingFile(id) {
+  for (const ext of RECORDING_EXTS) {
+    const p = path.join(RECORDINGS_DIR, `${id}.${ext}`);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
 
 app.post('/api/recording/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
   const id = String(req.query.id || '');
@@ -646,16 +664,18 @@ app.post('/api/recording/chunk', express.raw({ type: 'application/octet-stream',
   if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
     return res.status(400).json({ error: 'Empty chunk' });
   }
-  fs.appendFileSync(path.join(RECORDINGS_DIR, `${id}.webm`), req.body);
+  const ext = RECORDING_EXTS.includes(req.query.ext) ? req.query.ext : 'webm';
+  const file = findRecordingFile(id) || path.join(RECORDINGS_DIR, `${id}.${ext}`);
+  fs.appendFileSync(file, req.body);
   res.json({ success: true });
 });
 
 app.get('/api/admin/recordings/:id', requireAdmin, (req, res) => {
   const id = String(req.params.id || '');
   if (!RECORDING_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid recording id' });
-  const file = path.join(RECORDINGS_DIR, `${id}.webm`);
-  if (!fs.existsSync(file)) return res.status(404).json({ error: 'Recording not found' });
-  res.sendFile(file); // sets video/webm from the extension and honors Range requests
+  const file = findRecordingFile(id);
+  if (!file) return res.status(404).json({ error: 'Recording not found' });
+  res.sendFile(file); // sets video/webm or video/mp4 from the real extension, honors Range requests
 });
 
 // ─── Problem-Solving Question Bank ────────────────────────────────────────────
@@ -935,10 +955,10 @@ app.post('/api/report', async (req, res) => {
 
     // Only attach a recording that actually exists on disk — a made-up id in
     // the request must not become a broken (or probing) link in the report.
-    const safeRecordingId = (typeof recordingId === 'string'
-      && RECORDING_ID_RE.test(recordingId)
-      && fs.existsSync(path.join(RECORDINGS_DIR, `${recordingId}.webm`)))
-      ? recordingId : null;
+    const recordingFile = (typeof recordingId === 'string' && RECORDING_ID_RE.test(recordingId))
+      ? findRecordingFile(recordingId) : null;
+    const safeRecordingId = recordingFile ? recordingId : null;
+    const recordingExt = recordingFile ? path.extname(recordingFile).slice(1) : null;
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
@@ -1028,7 +1048,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.conductFlagged = !!endedForMisconduct;
     reportData.misconductCount = misconductCount;
 
-    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId });
+    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt });
 
     // The report itself is never sent back to the candidate's browser — it's
     // only retrievable later through the password-protected /admin dashboard.

@@ -85,8 +85,11 @@ input, select, textarea { font-family: inherit; }
 #screen-setup {
   align-items: center;
   justify-content: center;
-  min-height: 100vh;
+  min-height: 100vh;  /* fallback for browsers without dvh support */
+  min-height: 100dvh; /* iOS Safari: excludes the space the address bar covers */
   padding: 24px;
+  padding-top: max(24px, env(safe-area-inset-top));
+  padding-bottom: max(24px, env(safe-area-inset-bottom));
 }
 #screen-setup.active { display: flex; }
 
@@ -385,6 +388,9 @@ input, select, textarea { font-family: inherit; }
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   padding: 16px 24px 0;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
 }
 .stage-bar-top {
   display: flex;
@@ -515,6 +521,9 @@ input, select, textarea { font-family: inherit; }
   background: rgba(8,12,24,0.95);
   border-top: 1px solid var(--border);
   padding: 16px 24px 20px;
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -607,7 +616,7 @@ input, select, textarea { font-family: inherit; }
 /* ═══════════════════════════════════════════════════════════════════════════
    SCREEN 3 — PROBLEM SOLVING (WHITEBOARD)
    ═══════════════════════════════════════════════════════════════════════════ */
-#screen-problem { min-height: 100vh; }
+#screen-problem { min-height: 100vh; min-height: 100dvh; }
 #screen-problem.active { display: flex; flex-direction: column; }
 
 .problem-header {
@@ -617,6 +626,9 @@ input, select, textarea { font-family: inherit; }
   background: rgba(8,12,24,0.95);
   border-bottom: 1px solid var(--border);
   padding: 14px 24px;
+  padding-top: max(14px, env(safe-area-inset-top));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -680,6 +692,9 @@ input, select, textarea { font-family: inherit; }
   display: flex;
   flex-direction: column;
   padding: 20px 24px;
+  padding-bottom: max(20px, env(safe-area-inset-bottom));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
   gap: 14px;
   min-height: 0;
 }
@@ -1225,12 +1240,59 @@ input, select, textarea { font-family: inherit; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-  .wb-canvas-wrap       { min-height: 200px; }
   .wb-dictate-btn       { margin-left: 0; }
   .report-top-row      { grid-template-columns: 1fr; }
   .cats-grid           { grid-template-columns: 1fr; }
   .si-list             { grid-template-columns: 1fr; }
   .setup-card          { padding: 32px 24px; }
+
+  /* iOS Safari auto-zooms the page when a focused input's font is under 16px
+     — bump it just on touch-width screens rather than changing the desktop
+     design, and it doubles as a bigger, easier-to-hit tap target here too. */
+  .form-group input,
+  .form-group select { font-size: 16px; padding: 14px 16px 14px 42px; }
+
+  /* Whiteboard toolbar: mouse-tuned buttons (~28-30px tall, 22px swatches)
+     are too small to reliably tap with a fingertip (~44px is the accepted
+     minimum touch target) — grow padding/size without changing the icons. */
+  .wb-tool-btn {
+    padding: 11px 14px;
+    font-size: 14px;
+  }
+  .wb-dictate-btn {
+    padding: 11px 16px;
+    font-size: 14px;
+  }
+  .wb-color-btn {
+    width: 32px; height: 32px;
+  }
+  .wb-tool-group { gap: 8px; }
+  .wb-colors { gap: 10px; }
+
+  /* Trim everything ABOVE the canvas so it isn't pushed below the fold on a
+     short phone screen once the toolbar above grows for touch targets. */
+  .wb-body            { padding: 12px 16px; gap: 10px; }
+  .q-card-wb          { padding: 12px 14px; }
+  .q-card-wb .q-text  { font-size: 14px; }
+  .q-diagram-container svg { width: 200px; }
+  .wb-canvas-wrap     { min-height: 180px; }
+
+  .problem-header     { padding: 12px 16px; }
+  .problem-header h3 span { display: none; } /* icon alone is enough at this width */
+
+  /* Redundant branding text competes for space with the quit button next to
+     it — drop it below phone width rather than letting the row wrap/overflow. */
+  .stage-meta { display: none; }
+
+  .messages-wrap { padding: 16px; }
+  .msg-bubble    { max-width: 82%; }
+}
+
+@media (max-width: 480px) {
+  .quit-btn { padding: 5px 9px; }
+  .quit-btn span { display: none; } /* the ✕ alone reads fine at icon-button width */
+  .camera-active-badge { padding: 4px 8px; font-size: 10px; }
+  .mic-btn { width: 58px; height: 58px; }
 }
 
 /* -- Word-by-word reveal while the AI speaks (see App._revealSpokenWords) -- */

@@ -12,7 +12,7 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const ID_RE = /^[0-9a-f-]+$/i;
 
-function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null }) {
+function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null }) {
   const id = crypto.randomUUID();
   const record = {
     id,
@@ -22,7 +22,10 @@ function saveReport({ teacherName, subject, problemScore, transcript, report, re
     problemScore,
     transcript,
     report,
-    recordingId // data/recordings/<recordingId>.webm, or null if none was captured
+    recordingId, // data/recordings/<recordingId>.<recordingExt>, or null if none was captured
+    // 'webm' on most browsers, 'mp4' when recorded on iOS Safari (no webm
+    // MediaRecorder support there) — null alongside a null recordingId.
+    recordingExt
   };
   fs.writeFileSync(path.join(DATA_DIR, `${id}.json`), JSON.stringify(record, null, 2));
   return id;

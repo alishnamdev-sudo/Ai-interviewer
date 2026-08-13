@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
   <meta name="description" content="Vedantu MT AI Interview — voice-driven, structured evaluation for Master Teacher candidates"/>
   <title>Vedantu MT AI Interview</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
@@ -127,11 +127,11 @@
       <svg class="btn-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
     </button>
 
-    <!-- Browser warning -->
+    <!-- Browser warning — message body is filled in by App.startInterview()
+         since the right advice depends on the platform (see app.js). -->
     <div id="browser-warning" class="browser-warning hidden">
       <strong>⚠️ Unsupported Browser</strong><br>
-      Voice features require <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.
-      Please switch browsers and reload.
+      <span id="browser-warning-text">Voice features require <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>. Please switch browsers and reload.</span>
     </div>
 
     <p class="disclaimer">
@@ -153,7 +153,7 @@
       <div class="stage-bar-right">
         <span class="stage-meta">Vedantu MT AI Interview</span>
         <span class="camera-active-badge" title="Your camera and microphone are on — the interview is recorded for review, and periodic snapshots gauge engagement">🎥 Recording</span>
-        <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ Quit Interview</button>
+        <button class="quit-btn" onclick="App.quitInterview()" title="End the interview now">✕ <span>Quit Interview</span></button>
       </div>
     </div>
     <div class="stage-progress-track">
@@ -214,7 +214,7 @@
   <div class="problem-header">
     <h3>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M8 7h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h.01"/></svg>
-      Problem Solving
+      <span>Problem Solving</span>
     </h3>
     <div class="problem-header-right">
       <span id="q-subj" class="problem-badge"></span>

@@ -138,7 +138,7 @@ const Admin = {
 
   renderReport(record) {
     const container = document.getElementById('report-container');
-    const { teacherName, subject, problemScore, createdAt, transcript, recordingId = null, report = {} } = record;
+    const { teacherName, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, report = {} } = record;
     const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
@@ -227,7 +227,7 @@ const Admin = {
         <div class="transcript-header">
           <h4>🎥 Interview Recording</h4>
           <a class="btn-secondary" href="/api/admin/recordings/${encodeURIComponent(recordingId)}"
-             download="interview-${encodeURIComponent(teacherName || 'candidate')}.webm">⬇ Download Recording</a>
+             download="interview-${encodeURIComponent(teacherName || 'candidate')}.${recordingExt || 'webm'}">⬇ Download Recording</a>
         </div>
         <video controls preload="metadata"
                src="/api/admin/recordings/${encodeURIComponent(recordingId)}"

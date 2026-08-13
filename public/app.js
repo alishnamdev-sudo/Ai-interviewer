@@ -141,8 +141,21 @@ const App = {
 
   get stage() { return STAGES[this.s.stageIndex]; },
 
+  // iPadOS reports as "MacIntel" with touch points (no more "iPad" in its UA
+  // by default), so both checks are needed to catch every iOS/iPadOS device.
+  _isIOSDevice() {
+    const ua = navigator.userAgent || '';
+    return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  },
+
   // ── Setup ──────────────────────────────────────────────────────────────────
   async startInterview() {
+    // Must run synchronously in this click handler, before any `await` below —
+    // iOS Safari only unlocks audio playback for the rest of the page when the
+    // unlocking call happens in the same task as the user gesture that
+    // triggered it (see VoiceManager.unlockAudio's own comment for why).
+    VoiceManager.unlockAudio();
+
     const name    = document.getElementById('teacher-name').value.trim();
     const subject = document.getElementById('subject-select').value;
     const spokenLang = document.getElementById('language-select').value || 'en-IN';
@@ -165,6 +178,17 @@ const App = {
     // without prompting for a permission that would go unused anyway.
     const { supported } = await VoiceManager.init(spokenLang);
     if (!supported) {
+      // "Switch to Chrome or Edge" is impossible on iOS — every browser there
+      // (including ones named Chrome/Edge) is Safari/WebKit underneath and
+      // has no speech recognition at all. This path is only reachable when
+      // the server has no Sarvam key configured, in which case iOS genuinely
+      // cannot run the interview at all — say so plainly instead.
+      const msgEl = document.getElementById('browser-warning-text');
+      if (msgEl) {
+        msgEl.textContent = this._isIOSDevice()
+          ? 'Voice features aren’t available in any browser on iPhone/iPad. Please use a desktop or laptop computer with Google Chrome or Microsoft Edge instead.'
+          : 'Voice features require Google Chrome or Microsoft Edge. Please switch browsers and reload.';
+      }
       document.getElementById('browser-warning').classList.remove('hidden');
       return;
     }
@@ -231,7 +255,19 @@ const App = {
   // permission prompt rather than any custom UI.
   async _requestCameraAccess() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false });
+      // facingMode:'user' asks for the selfie camera specifically — phones/
+      // tablets have a rear camera too, and without this the browser/OS choice
+      // of default camera is inconsistent (especially on Android), which
+      // would capture the wrong thing for both the recording and the periodic
+      // engagement snapshots. 'ideal' (not 'exact') so a device that can't
+      // honor it still returns whatever camera it has instead of failing.
+      // width/height likewise as 'ideal' — phone front cameras are natively
+      // widescreen and forcing 320×240 (4:3) would crop/zoom the picture
+      // farther than a plain "prefer roughly this size" request.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'user' }, width: { ideal: 320 }, height: { ideal: 240 } },
+        audio: false
+      });
       this.s.cameraStream  = stream;
       this.s.cameraEnabled = true;
       const video = document.getElementById('camera-preview-video');

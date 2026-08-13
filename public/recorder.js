@@ -3,6 +3,8 @@
  * audio) via MediaRecorder and streams it to the server in ~10-second chunks
  * while the interview is running, so nothing large ever sits in memory and a
  * mid-interview crash still leaves everything recorded up to that point.
+ * Container is webm everywhere except iOS Safari, which has no webm
+ * MediaRecorder support and records mp4 instead (see start()/recordingExt).
  *
  * The AI interviewer's voice is browser TTS (speaker output), which the
  * browser cannot capture — the recording is of the candidate, like a
@@ -15,6 +17,7 @@
 const Recorder = {
   mediaRecorder: null,
   recordingId:   null,
+  recordingExt:  'webm', // actual container in use — see start(); iOS Safari records mp4
   audioStream:   null,
   failed:        false,
   // Chunks must be appended server-side in capture order, so uploads are
@@ -43,10 +46,17 @@ const Recorder = {
         ...this.audioStream.getAudioTracks()
       ]);
 
+      // iOS Safari has no webm MediaRecorder support at all (isTypeSupported
+      // returns false for every webm variant), so it needs mp4 candidates too
+      // — without them mimeType ends up '', which just makes the browser pick
+      // its own default container silently. Order matters: first supported
+      // wins, so webm (smaller, universally supported elsewhere) is tried first.
       const mimeType = [
         'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
-        'video/webm'
+        'video/webm',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4'
       ].find(t => MediaRecorder.isTypeSupported(t)) || '';
 
       this.recordingId = crypto.randomUUID();
@@ -58,6 +68,11 @@ const Recorder = {
         videoBitsPerSecond: 600000, // 320×240 review-quality video ≈ 5 MB/min total
         audioBitsPerSecond: 64000
       });
+      // Read back the ACTUAL mimeType the browser committed to (authoritative
+      // even when `mimeType` above was '' and the browser silently chose its
+      // own default) so the server saves/serves the right file extension.
+      const actualMime = this.mediaRecorder.mimeType || mimeType;
+      this.recordingExt = actualMime.includes('mp4') ? 'mp4' : 'webm';
       this.mediaRecorder.ondataavailable = e => {
         if (e.data && e.data.size > 0) this._enqueueChunk(e.data);
       };
@@ -74,7 +89,7 @@ const Recorder = {
   _enqueueChunk(blob) {
     if (this.failed) return;
     this.uploadQueue = this.uploadQueue
-      .then(() => fetch(`/api/recording/chunk?id=${this.recordingId}`, {
+      .then(() => fetch(`/api/recording/chunk?id=${this.recordingId}&ext=${this.recordingExt}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: blob

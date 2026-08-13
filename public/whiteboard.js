@@ -28,7 +28,16 @@ const Whiteboard = (() => {
     canvas.addEventListener('pointercancel', onPointerUp);
     canvas.addEventListener('pointerleave', onPointerUp);
 
-    window.addEventListener('resize', debounce(resize, 150));
+    const debouncedResize = debounce(resize, 150);
+    window.addEventListener('resize', debouncedResize);
+    // iOS Safari's dynamic address bar showing/hiding (and, on some devices,
+    // orientation changes) doesn't reliably fire a plain `resize` event the
+    // way desktop browsers do — visualViewport.resize and orientationchange
+    // catch what window.resize alone misses there. Harmless no-ops if a
+    // browser fires all of these for the same layout change; resize() is
+    // idempotent and debounced regardless of how many listeners fire it.
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', debouncedResize);
+    window.addEventListener('orientationchange', debouncedResize);
     resize();
   }
 
