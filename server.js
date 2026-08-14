@@ -582,14 +582,24 @@ Respond ONLY with a JSON array of exactly ${RESUME_QUESTION_COUNT} strings, in t
 });
 
 // ─── /api/acknowledge-answer ───────────────────────────────────────────────────
-// Generates a brief, emotionally-appropriate reaction to a RESUME_QA answer
-// before the (already pre-generated) next question is asked — e.g. genuinely
-// empathetic if the candidate says they haven't achieved something, warm if
-// they have — rather than either silence or a generic upbeat "Wonderful!"
-// that doesn't match what they actually said. Kept as its own low-stakes
-// endpoint (separate from the conduct classifier) since a flat/wrong tone
-// here is a UX quality issue, not something that needs to block the interview
-// — on failure it falls back to a safe neutral line rather than erroring out.
+// Generates a brief reaction to a RESUME_QA answer before the (already
+// pre-generated) next question is asked, rather than either silence or a
+// generic upbeat "Wonderful!" that doesn't match what they actually said.
+// Two distinct reaction modes, chosen by the model per question:
+//  - Judgment questions (teaching approach/methodology — there's a genuinely
+//    better or worse answer): react honestly to the SUBSTANCE — positive and
+//    specific for a sound approach, gently corrective for a weak/vague/random
+//    one, clearly (but kindly) flagged if it's an actively poor practice.
+//  - Factual/biographical questions (background, achievements, experience —
+//    no right-or-wrong answer): match tone to content instead — empathetic if
+//    negative/disappointing, warm if a genuine positive, neutral otherwise.
+//    (An achievement question like "have you produced toppers" isn't a skill
+//    to grade — reacting "wrong answer" to a candidate's honest "no" would be
+//    unfair and out of place.)
+// Kept as its own low-stakes endpoint (separate from the conduct classifier)
+// since a flat/wrong reaction here is a UX quality issue, not something that
+// needs to block the interview — on failure it falls back to a safe neutral
+// line rather than erroring out.
 app.post('/api/acknowledge-answer', async (req, res) => {
   try {
     const { question, answer, teacherName } = req.body;
@@ -597,23 +607,31 @@ app.post('/api/acknowledge-answer', async (req, res) => {
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.6, maxOutputTokens: 60, thinkingConfig: { thinkingBudget: 0 } }
+      generationConfig: { temperature: 0.6, maxOutputTokens: 80, thinkingConfig: { thinkingBudget: 0 } }
     });
 
-    const promptText = `You are a warm, professional interviewer${teacherName ? ` speaking with ${teacherName}` : ''}. You just asked:
+    const promptText = `You are a warm, professional interviewer${teacherName ? ` speaking with ${teacherName}` : ''}, evaluating a teacher candidate. You just asked:
 "${question}"
 
 They answered:
 "${answer}"
 
-Write ONE short, natural spoken acknowledgment (under 20 words) reacting to what they actually said. Match your tone to the content — genuinely empathetic and understanding if the answer is negative or disappointing (e.g. they haven't achieved something, faced a setback, or answered "no"/"none"), warm and appreciative if it's a genuine positive or achievement, or a brief neutral acknowledgment otherwise. Do NOT default to generic enthusiasm like "Wonderful!" or "Great!" unless the answer actually warrants it.
+Write ONE short, natural spoken reaction (under 25 words) — a separate question will follow immediately after this, so don't ask one yourself.
+
+First decide what KIND of question this was:
+- If it asks about a teaching approach, method, opinion, or how they'd handle a classroom situation — i.e. there's a genuinely better or worse answer — judge the SUBSTANCE of what they described and react honestly. Pick exactly one:
+  • POSITIVE — the approach is sound and effective: react positively and name what's good about it briefly.
+  • NEEDS-IMPROVEMENT — the approach is weak, vague, generic, superficial, or doesn't really engage with the question (including short/dismissive answers like "I don't know" or "I'd just tell them to figure it out"): say so plainly but kindly — e.g. "That could be a bit more specific" or "That approach could be stronger." Do NOT dress this up as a neutral or backhanded-positive observation ("that's one way to..."/"that's certainly an option") — a weak answer must get a reaction that clearly signals it was weak, not a diplomatic non-reaction that sounds approving.
+  • POOR — what they described is an actively counterproductive or harmful practice: clearly (but kindly) flag it, e.g. "That's not quite the right approach" — and briefly say why if there's room. Don't pretend a bad idea is fine just to be nice.
+- If it's a factual/biographical question with no right-or-wrong answer (background, qualifications, years of experience, achievements, whether they've produced toppers, etc.), do NOT judge it as correct/incorrect — instead match your tone to the content: genuinely warm and empathetic if it's negative or disappointing (e.g. they haven't achieved something, faced a setback, answered "no"/"none" — something like "That's alright, not every teacher gets that chance" rather than a flat "I see"), warm and appreciative if it's a genuine positive, or a brief neutral acknowledgment otherwise.
+
+Do NOT default to generic enthusiasm like "Wonderful!" or "Great!" unless it's actually warranted. Do NOT let politeness blur a NEEDS-IMPROVEMENT or POOR reaction into sounding positive — the candidate should be able to tell from your tone alone whether that answer landed well or not.
 
 Rules:
-- Do NOT ask a question — a separate question will follow immediately after this.
 - Do NOT repeat their answer back verbatim.
-- Keep it brief and natural, like a real interviewer reacting in the moment.
+- Keep it brief and natural, like a real interviewer reacting in the moment — warm and encouraging in DELIVERY even when the content needs improvement, but honest in substance.
 
-Respond with ONLY the acknowledgment sentence, no preamble, no quotation marks.`;
+Respond with ONLY the reaction sentence, no preamble, no quotation marks.`;
 
     const result = await model.generateContent(promptText);
     const text = result.response.text().trim().replace(/^"|"$/g, '');
