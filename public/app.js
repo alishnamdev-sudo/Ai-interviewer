@@ -41,7 +41,7 @@ const SOLVE_SECONDS = 90;
 // Number of distinct problem-solving (whiteboard) questions asked during
 // PROBLEM_SOLVE, each with its own 90-second timer and a spoken follow-up
 // question about the candidate's approach once they submit — unless the
-// interview ends early, see MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS below.
+// interview ends early, see the early-exit constants below.
 const PROBLEM_SOLVE_QUESTION_COUNT = 8;
 
 // If the candidate gets this many whiteboard rounds wrong in a row (per the
@@ -51,6 +51,16 @@ const PROBLEM_SOLVE_QUESTION_COUNT = 8;
 // follow-up question entirely and go straight to the closing announcement.
 // A single correct round anywhere resets the streak.
 const MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS = 3;
+
+// Performance checkpoint evaluated once, right after this whiteboard round is
+// scored: the candidate must be performing well enough by here to justify the
+// remaining rounds. Must be less than PROBLEM_SOLVE_QUESTION_COUNT for the
+// checkpoint to ever apply.
+const PROBLEM_SOLVE_CHECKPOINT_ROUND = 5;
+// Accuracy required at the checkpoint to continue on to
+// PROBLEM_SOLVE_QUESTION_COUNT — below this, the interview concludes right
+// there instead of continuing through the remaining rounds.
+const PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY = 0.8;
 
 // If the candidate stays silent this long after the AI asks a (non-whiteboard)
 // question — i.e. hasn't started speaking at all — treat it as no-answer and
@@ -117,6 +127,7 @@ const App = {
     problemQuestions: null,   // array of PROBLEM_SOLVE_QUESTION_COUNT distinct whiteboard questions for this subject
     problemRoundIndex: 0,     // index into problemQuestions of the round currently being solved
     problemScores: [],        // score (0-10) from each round, averaged into problemScore for the report
+    problemCorrectCount: 0,   // count of isCorrect:true rounds so far; drives the accuracy checkpoint
     consecutiveWrongProblemAnswers: 0, // resets on any correct round; see MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS
     awaitingProblemFollowUp: false, // true while listening for the answer to a problem-solving follow-up question
     problemScore:  0,
@@ -673,6 +684,7 @@ const App = {
     this.s.problemQuestions   = await this._fetchProblemQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
+    this.s.problemCorrectCount = 0;
     this.s.consecutiveWrongProblemAnswers = 0;
 
     const total = this.s.problemQuestions.length;
@@ -906,11 +918,28 @@ const App = {
       this.s.problemScore = Math.round(this.s.problemScores.reduce((a, b) => a + b, 0) / this.s.problemScores.length);
 
       // A wrong round (including submitting nothing) extends the streak; any
-      // correct round resets it. Hitting the limit skips this round's
-      // follow-up question and ends problem-solving right here — see
-      // MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS.
+      // correct round resets it and counts toward the accuracy checkpoint below.
+      if (ev.isCorrect) this.s.problemCorrectCount++;
       this.s.consecutiveWrongProblemAnswers = ev.isCorrect ? 0 : this.s.consecutiveWrongProblemAnswers + 1;
-      const endForPoorPerformance = this.s.consecutiveWrongProblemAnswers >= MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS;
+
+      // Two early-exit triggers, both producing the same effect (skip this
+      // round's follow-up, go straight to the closing announcement instead of
+      // the remaining rounds) — only the reason logged for the admin differs:
+      //  1. MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS wrong rounds in a row, at any point.
+      //  2. At the PROBLEM_SOLVE_CHECKPOINT_ROUND-th round specifically, accuracy
+      //     so far hasn't met PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY — meeting or
+      //     beating it there is what earns the remaining rounds.
+      let endEarlyReason = null;
+      if (this.s.consecutiveWrongProblemAnswers >= MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS) {
+        endEarlyReason = `${MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS} consecutive incorrect/insufficient answers`;
+      } else if (this.s.problemScores.length === PROBLEM_SOLVE_CHECKPOINT_ROUND) {
+        const accuracy = this.s.problemCorrectCount / this.s.problemScores.length;
+        if (accuracy < PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY) {
+          const tally = `${this.s.problemCorrectCount}/${this.s.problemScores.length} correct`;
+          endEarlyReason = `below the ${Math.round(PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY * 100)}% accuracy checkpoint at question ${PROBLEM_SOLVE_CHECKPOINT_ROUND} (${tally})`;
+        }
+      }
+      const endEarly = !!endEarlyReason;
 
       const roundLabel = `Problem Solving (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
 
@@ -926,8 +955,8 @@ const App = {
       // final report itself, it's never shown or spoken to the candidate. Log it
       // to the transcript for review only.
       this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.workShown ? `Working shown: ${ev.workShown} | ` : ''}${ev.evaluation} ${ev.feedback}`, roundLabel);
-      if (endForPoorPerformance) {
-        this.addEntry('AI Interviewer (internal note — not shown to candidate)', `Problem-solving ended early after ${MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS} consecutive incorrect/insufficient answers.`, roundLabel);
+      if (endEarly) {
+        this.addEntry('AI Interviewer (internal note — not shown to candidate)', `Problem-solving ended early — ${endEarlyReason}.`, roundLabel);
       }
 
       this.showScreen('interview');
@@ -942,7 +971,7 @@ const App = {
       this.setStatus('speaking');
       VoiceManager.speak(ackText, () => {
         if (this.s.quitting) return;
-        if (endForPoorPerformance) {
+        if (endEarly) {
           this._concludeProblemSolving();
         } else if (ev.followUpQuestion) {
           setTimeout(() => { if (!this.s.quitting) this._askProblemFollowUp(ev.followUpQuestion, roundLabel); }, 700);
