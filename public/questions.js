@@ -59,6 +59,33 @@ const QUESTIONS_DB = {
       question: 'The diagram shows a right-angled triangle with the two legs measuring 6 cm and 8 cm. Using the diagram, find the length of the hypotenuse and the measure of the angle opposite the 6 cm side.',
       diagramSvg: '<svg viewBox="0 0 240 180" xmlns="http://www.w3.org/2000/svg"><polygon points="30,150 30,30 190,150" fill="none" stroke="#1a1a1a" stroke-width="2"/><rect x="30" y="138" width="12" height="12" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="6" y="95" font-size="14" fill="#1a1a1a">6 cm</text><text x="95" y="168" font-size="14" fill="#1a1a1a">8 cm</text><text x="118" y="82" font-size="14" fill="#1a1a1a">?</text></svg>',
       evalContext: 'Right triangle, legs 6 cm and 8 cm, right angle between them. Correct: hypotenuse = 10 cm (Pythagoras); angle opposite the 6 cm side = arcsin(6/10) ≈ 36.87°.'
+    },
+    {
+      id: 'math_6',
+      requiresWork: true,
+      topic: 'Probability',
+      difficulty: 'Medium',
+      subject: 'Mathematics',
+      hasDiagram: false,
+      question: 'A bag contains 4 red balls and 6 blue balls. Find the probability of drawing 2 red balls in a row without replacement.'
+    },
+    {
+      id: 'math_7',
+      requiresWork: true,
+      topic: 'Coordinate Geometry',
+      difficulty: 'Medium',
+      subject: 'Mathematics',
+      hasDiagram: false,
+      question: 'Find the distance between the points A(2, 3) and B(7, 15), and the coordinates of the midpoint of AB.'
+    },
+    {
+      id: 'math_8',
+      requiresWork: true,
+      topic: 'Statistics',
+      difficulty: 'Medium',
+      subject: 'Mathematics',
+      hasDiagram: false,
+      question: 'Find the mean, median, and mode of the data set: 4, 8, 6, 5, 3, 8, 9, 8.'
     }
   ],
 
@@ -91,6 +118,51 @@ const QUESTIONS_DB = {
       subject: 'Physics',
       hasDiagram: false,
       question: 'A 5 kg block is placed on a frictionless incline at 30° to the horizontal. Find its acceleration. [g = 10 m/s²]'
+    },
+    {
+      id: 'phy_4',
+      requiresWork: true,
+      topic: 'Work & Energy',
+      difficulty: 'Medium',
+      subject: 'Physics',
+      hasDiagram: false,
+      question: 'A 2 kg object is lifted vertically through a height of 5 m at constant velocity. Calculate the work done against gravity. [g = 10 m/s²]'
+    },
+    {
+      id: 'phy_5',
+      requiresWork: true,
+      topic: "Ohm's Law",
+      difficulty: 'Medium',
+      subject: 'Physics',
+      hasDiagram: false,
+      question: 'A resistor of 15 Ω is connected across a 3 V battery. Calculate the current flowing through the resistor and the power dissipated.'
+    },
+    {
+      id: 'phy_6',
+      requiresWork: true,
+      topic: 'Wave Properties',
+      difficulty: 'Medium',
+      subject: 'Physics',
+      hasDiagram: false,
+      question: 'A sound wave has a frequency of 250 Hz and a wavelength of 1.4 m. Calculate its speed.'
+    },
+    {
+      id: 'phy_7',
+      requiresWork: true,
+      topic: 'Optics — Mirrors & Lenses',
+      difficulty: 'Medium',
+      subject: 'Physics',
+      hasDiagram: false,
+      question: 'An object is placed 30 cm in front of a convex lens of focal length 10 cm. Using the lens formula, find the position of the image.'
+    },
+    {
+      id: 'phy_8',
+      requiresWork: true,
+      topic: 'Heat & Thermodynamics',
+      difficulty: 'Medium',
+      subject: 'Physics',
+      hasDiagram: false,
+      question: 'How much heat energy is required to raise the temperature of 2 kg of water from 20°C to 80°C? [specific heat of water = 4200 J/kg°C]'
     }
   ],
 
@@ -130,6 +202,40 @@ const QUESTIONS_DB = {
       question: 'The diagram shows the atomic structure of an element with a nuclear charge of +11 and electron shells containing 2, 8, and 1 electrons respectively. Identify the element, write its full electronic configuration, and state which group of the periodic table it belongs to.',
       diagramSvg: '<svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg"><circle cx="110" cy="110" r="12" fill="#1a1a1a"/><text x="110" y="114" font-size="10" fill="#fff" text-anchor="middle">+11</text><circle cx="110" cy="110" r="35" fill="none" stroke="#2563eb" stroke-width="1.5"/><circle cx="110" cy="110" r="60" fill="none" stroke="#2563eb" stroke-width="1.5"/><circle cx="110" cy="110" r="85" fill="none" stroke="#2563eb" stroke-width="1.5"/><text x="110" y="80" font-size="13" fill="#1a1a1a" text-anchor="middle">2e⁻</text><text x="110" y="53" font-size="13" fill="#1a1a1a" text-anchor="middle">8e⁻</text><text x="110" y="28" font-size="13" fill="#1a1a1a" text-anchor="middle">1e⁻</text></svg>',
       evalContext: 'Nuclear charge +11, shells 2,8,1 → element is Sodium (Na). Correct electronic configuration: 1s² 2s² 2p⁶ 3s¹ (or 2,8,1 shorthand). Belongs to Group 1 (alkali metals).'
+    },
+    {
+      id: 'chem_5',
+      requiresWork: true,
+      topic: 'Acids & Bases',
+      difficulty: 'Medium',
+      subject: 'Chemistry',
+      hasDiagram: false,
+      question: 'A solution has a hydrogen ion concentration [H+] of 1 × 10⁻⁴ mol/L. Calculate its pH and state whether the solution is acidic or basic.'
+    },
+    {
+      id: 'chem_6',
+      topic: 'Chemical Bonding',
+      difficulty: 'Medium',
+      subject: 'Chemistry',
+      hasDiagram: false,
+      question: 'Explain the difference between an ionic bond and a covalent bond, giving one example compound for each.'
+    },
+    {
+      id: 'chem_7',
+      requiresWork: true,
+      topic: 'Gas Laws',
+      difficulty: 'Medium',
+      subject: 'Chemistry',
+      hasDiagram: false,
+      question: 'A gas occupies 4 L at a pressure of 2 atm. If the pressure is increased to 8 atm at constant temperature, find the new volume using Boyle\'s Law.'
+    },
+    {
+      id: 'chem_8',
+      topic: 'Organic Chemistry — Functional Groups',
+      difficulty: 'Medium',
+      subject: 'Chemistry',
+      hasDiagram: false,
+      question: 'Identify the functional group present in ethanoic acid (CH₃COOH) and explain how it differs from the functional group in ethanol (C₂H₅OH).'
     }
   ],
 
@@ -159,6 +265,47 @@ const QUESTIONS_DB = {
       question: 'The diagram shows a plant cell with structures labelled A, B, and C. Identify structures A, B, and C, and state one function of structure C.',
       diagramSvg: '<svg viewBox="0 0 260 180" xmlns="http://www.w3.org/2000/svg"><rect x="15" y="15" width="230" height="150" rx="20" fill="none" stroke="#1a1a1a" stroke-width="2"/><ellipse cx="180" cy="90" rx="55" ry="45" fill="none" stroke="#16a34a" stroke-width="1.5"/><text x="180" y="94" font-size="12" fill="#16a34a" text-anchor="middle">B</text><circle cx="80" cy="60" r="22" fill="none" stroke="#7c3aed" stroke-width="1.5"/><text x="80" y="64" font-size="12" fill="#7c3aed" text-anchor="middle">A</text><ellipse cx="70" cy="125" rx="15" ry="9" fill="none" stroke="#16a34a" stroke-width="1.5"/><text x="70" y="128" font-size="11" fill="#16a34a" text-anchor="middle">C</text><ellipse cx="108" cy="135" rx="15" ry="9" fill="none" stroke="#16a34a" stroke-width="1.5"/><text x="108" y="138" font-size="11" fill="#16a34a" text-anchor="middle">C</text></svg>',
       evalContext: 'Plant cell diagram: outer rounded rectangle = cell wall. A = small circle near top-left = nucleus. B = large oval taking up most of the cell = vacuole. C = two small oval structures near the bottom = chloroplasts. Function of chloroplast: site of photosynthesis, converts light energy into chemical energy (glucose).'
+    },
+    {
+      id: 'bio_4',
+      topic: 'Human Digestive System',
+      difficulty: 'Medium',
+      subject: 'Biology',
+      hasDiagram: false,
+      question: 'Describe the role of the small intestine in digestion, and name one enzyme active there along with what it breaks down.'
+    },
+    {
+      id: 'bio_5',
+      requiresWork: true,
+      topic: 'Genetics — Mendelian Inheritance',
+      difficulty: 'Medium',
+      subject: 'Biology',
+      hasDiagram: false,
+      question: 'In pea plants, tall (T) is dominant over short (t). Cross a heterozygous tall plant (Tt) with a short plant (tt) and determine the expected genotype and phenotype ratio of the offspring.'
+    },
+    {
+      id: 'bio_6',
+      topic: 'Ecosystem & Food Chains',
+      difficulty: 'Medium',
+      subject: 'Biology',
+      hasDiagram: false,
+      question: 'Construct a simple food chain using the following organisms: grass, grasshopper, frog, snake. Identify the producer and the top consumer.'
+    },
+    {
+      id: 'bio_7',
+      topic: 'Respiration',
+      difficulty: 'Medium',
+      subject: 'Biology',
+      hasDiagram: false,
+      question: 'Write the overall equation for aerobic cellular respiration and explain where in the cell most of the ATP is produced.'
+    },
+    {
+      id: 'bio_8',
+      topic: 'Nervous System',
+      difficulty: 'Medium',
+      subject: 'Biology',
+      hasDiagram: false,
+      question: 'Describe the path of a nerve impulse in a simple reflex arc, starting from the stimulus and ending at the response, naming each component involved.'
     }
   ],
 
@@ -196,6 +343,40 @@ const QUESTIONS_DB = {
       question: 'The flowchart shows an algorithm for a given input N. Trace through it for N = 5, state the final value that gets printed, and explain in one line what the flowchart computes in general.',
       diagramSvg: '<svg viewBox="0 0 220 340" xmlns="http://www.w3.org/2000/svg"><ellipse cx="110" cy="25" rx="45" ry="18" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="29" font-size="11" text-anchor="middle" fill="#1a1a1a">Start</text><line x1="110" y1="43" x2="110" y2="63" stroke="#1a1a1a" stroke-width="1.5"/><rect x="45" y="63" width="130" height="34" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="84" font-size="11" text-anchor="middle" fill="#1a1a1a">sum = 0, i = 1</text><line x1="110" y1="97" x2="110" y2="118" stroke="#1a1a1a" stroke-width="1.5"/><polygon points="110,118 162,150 110,182 58,150" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="154" font-size="11" text-anchor="middle" fill="#1a1a1a">i ≤ N ?</text><line x1="110" y1="182" x2="110" y2="203" stroke="#1a1a1a" stroke-width="1.5"/><text x="120" y="199" font-size="10" fill="#1a1a1a">Yes</text><rect x="30" y="203" width="160" height="34" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="224" font-size="11" text-anchor="middle" fill="#1a1a1a">sum += i, i += 1</text><path d="M30,220 H10 V150 H58" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="172" y="145" font-size="10" fill="#1a1a1a">No</text><line x1="162" y1="150" x2="200" y2="150" stroke="#1a1a1a" stroke-width="1.5"/><line x1="200" y1="150" x2="200" y2="277" stroke="#1a1a1a" stroke-width="1.5"/><line x1="200" y1="277" x2="175" y2="277" stroke="#1a1a1a" stroke-width="1.5"/><rect x="45" y="260" width="130" height="34" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="281" font-size="11" text-anchor="middle" fill="#1a1a1a">Print sum</text><line x1="110" y1="294" x2="110" y2="315" stroke="#1a1a1a" stroke-width="1.5"/><ellipse cx="110" cy="322" rx="40" ry="17" fill="none" stroke="#1a1a1a" stroke-width="1.5"/><text x="110" y="326" font-size="11" text-anchor="middle" fill="#1a1a1a">End</text></svg>',
       evalContext: 'Flowchart: sum=0, i=1; while i<=N: sum+=i, i+=1; then print sum. It computes the sum of integers from 1 to N. For N=5, correct final printed value = 15 (1+2+3+4+5).'
+    },
+    {
+      id: 'cs_5',
+      requiresWork: true,
+      topic: 'Recursion',
+      difficulty: 'Medium',
+      subject: 'Computer Science',
+      hasDiagram: false,
+      question: 'Write a recursive function (in pseudocode) to compute the factorial of a non-negative integer n, and trace through it for n = 4, showing each recursive call and its return value.'
+    },
+    {
+      id: 'cs_6',
+      requiresWork: true,
+      topic: 'Sorting Algorithms',
+      difficulty: 'Medium',
+      subject: 'Computer Science',
+      hasDiagram: false,
+      question: 'Trace through Bubble Sort on the array [5, 1, 4, 2, 8], showing the array after each full pass, and state its worst-case time complexity.'
+    },
+    {
+      id: 'cs_7',
+      topic: 'Databases & SQL',
+      difficulty: 'Medium',
+      subject: 'Computer Science',
+      hasDiagram: false,
+      question: 'Explain the difference between a PRIMARY KEY and a FOREIGN KEY in a relational database, with a short example involving two related tables.'
+    },
+    {
+      id: 'cs_8',
+      topic: 'Time Complexity',
+      difficulty: 'Medium',
+      subject: 'Computer Science',
+      hasDiagram: false,
+      question: 'What is the time complexity of accessing an element in an array by index, versus searching for a value in an unsorted array of size n? Explain why.'
     }
   ],
 
@@ -225,6 +406,46 @@ const QUESTIONS_DB = {
       subject: 'English',
       hasDiagram: false,
       question: 'Read the line "The old house stood silent, its windows like tired eyes." Identify the literary device used and explain the mood it creates.'
+    },
+    {
+      id: 'eng_4',
+      topic: 'Comprehension & Inference',
+      difficulty: 'Medium',
+      subject: 'English',
+      hasDiagram: false,
+      question: 'Read: "Priya packed her bags for the third time that month, though she told no one where she was going." What can you infer about Priya\'s situation, and what clues in the sentence support your inference?'
+    },
+    {
+      id: 'eng_5',
+      topic: 'Précis Writing',
+      difficulty: 'Medium',
+      subject: 'English',
+      hasDiagram: false,
+      question: 'In two or three sentences, summarise the theme of this passage: a student describes struggling with a difficult subject all year, then finally succeeding after finding a mentor who explained concepts differently.'
+    },
+    {
+      id: 'eng_6',
+      topic: 'Parts of Speech',
+      difficulty: 'Medium',
+      subject: 'English',
+      hasDiagram: false,
+      question: 'In the sentence "She quickly finished her homework before dinner," identify the part of speech of each of these four words: quickly, finished, homework, dinner.'
+    },
+    {
+      id: 'eng_7',
+      topic: 'Active & Passive Voice',
+      difficulty: 'Medium',
+      subject: 'English',
+      hasDiagram: false,
+      question: 'Convert this sentence from active to passive voice: "The teacher explained the lesson to the students." Then explain one situation where passive voice is more appropriate than active.'
+    },
+    {
+      id: 'eng_8',
+      topic: 'Idioms & Phrasal Verbs',
+      difficulty: 'Medium',
+      subject: 'English',
+      hasDiagram: false,
+      question: 'Explain the meaning of the idiom "to hit the books" and use it correctly in an original sentence about a student preparing for exams.'
     }
   ]
 };

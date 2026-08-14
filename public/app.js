@@ -5,7 +5,8 @@
 
 // ─── Stage Configuration ──────────────────────────────────────────────────────
 // WRAP_UP is reached only as a closing announcement from _concludeProblemSolving()
-// — once all PROBLEM_SOLVE_QUESTION_COUNT whiteboard rounds are done, the
+// — once all PROBLEM_SOLVE_QUESTION_COUNT whiteboard rounds are done (or the
+// candidate gets MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS in a row wrong), the
 // interview concludes immediately with no further question of any kind.
 const STAGES = [
   'WELLBEING',
@@ -39,8 +40,17 @@ const SOLVE_SECONDS = 90;
 
 // Number of distinct problem-solving (whiteboard) questions asked during
 // PROBLEM_SOLVE, each with its own 90-second timer and a spoken follow-up
-// question about the candidate's approach once they submit.
-const PROBLEM_SOLVE_QUESTION_COUNT = 3;
+// question about the candidate's approach once they submit — unless the
+// interview ends early, see MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS below.
+const PROBLEM_SOLVE_QUESTION_COUNT = 8;
+
+// If the candidate gets this many whiteboard rounds wrong in a row (per the
+// evaluator's own isCorrect verdict — including a round where nothing was
+// submitted before time ran out), stop the problem-solving stage right there
+// rather than continuing through the remaining rounds: skip that round's
+// follow-up question entirely and go straight to the closing announcement.
+// A single correct round anywhere resets the streak.
+const MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS = 3;
 
 // If the candidate stays silent this long after the AI asks a (non-whiteboard)
 // question — i.e. hasn't started speaking at all — treat it as no-answer and
@@ -107,6 +117,7 @@ const App = {
     problemQuestions: null,   // array of PROBLEM_SOLVE_QUESTION_COUNT distinct whiteboard questions for this subject
     problemRoundIndex: 0,     // index into problemQuestions of the round currently being solved
     problemScores: [],        // score (0-10) from each round, averaged into problemScore for the report
+    consecutiveWrongProblemAnswers: 0, // resets on any correct round; see MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS
     awaitingProblemFollowUp: false, // true while listening for the answer to a problem-solving follow-up question
     problemScore:  0,
     isProcessing:  false,
@@ -662,6 +673,7 @@ const App = {
     this.s.problemQuestions   = await this._fetchProblemQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
+    this.s.consecutiveWrongProblemAnswers = 0;
 
     const total = this.s.problemQuestions.length;
     // Deliberately tone-neutral (not "Wonderful!") — this fixed line always
@@ -893,6 +905,13 @@ const App = {
       // payload — the average across all rounds so far.
       this.s.problemScore = Math.round(this.s.problemScores.reduce((a, b) => a + b, 0) / this.s.problemScores.length);
 
+      // A wrong round (including submitting nothing) extends the streak; any
+      // correct round resets it. Hitting the limit skips this round's
+      // follow-up question and ends problem-solving right here — see
+      // MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS.
+      this.s.consecutiveWrongProblemAnswers = ev.isCorrect ? 0 : this.s.consecutiveWrongProblemAnswers + 1;
+      const endForPoorPerformance = this.s.consecutiveWrongProblemAnswers >= MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS;
+
       const roundLabel = `Problem Solving (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
 
       // Log solution in transcript
@@ -907,6 +926,9 @@ const App = {
       // final report itself, it's never shown or spoken to the candidate. Log it
       // to the transcript for review only.
       this.addEntry('AI Interviewer (internal evaluation — not shown to candidate)', `${ev.workShown ? `Working shown: ${ev.workShown} | ` : ''}${ev.evaluation} ${ev.feedback}`, roundLabel);
+      if (endForPoorPerformance) {
+        this.addEntry('AI Interviewer (internal note — not shown to candidate)', `Problem-solving ended early after ${MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS} consecutive incorrect/insufficient answers.`, roundLabel);
+      }
 
       this.showScreen('interview');
       this.updateStageUI();
@@ -920,7 +942,9 @@ const App = {
       this.setStatus('speaking');
       VoiceManager.speak(ackText, () => {
         if (this.s.quitting) return;
-        if (ev.followUpQuestion) {
+        if (endForPoorPerformance) {
+          this._concludeProblemSolving();
+        } else if (ev.followUpQuestion) {
           setTimeout(() => { if (!this.s.quitting) this._askProblemFollowUp(ev.followUpQuestion, roundLabel); }, 700);
         } else {
           this._advanceProblemRound();
@@ -981,7 +1005,9 @@ const App = {
   },
 
   // Moves to the next problem-solving question, or concludes the interview
-  // once all PROBLEM_SOLVE_QUESTION_COUNT rounds are done.
+  // once all PROBLEM_SOLVE_QUESTION_COUNT rounds are done. (Ending early after
+  // MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS wrong rounds in a row is handled
+  // directly from submitSolution() instead — it never reaches this function.)
   async _advanceProblemRound() {
     if (this.s.quitting) return;
     this.s.problemRoundIndex++;
