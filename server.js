@@ -296,23 +296,61 @@ app.get('/api/admin/reports/:id', requireAdmin, (req, res) => {
 });
 
 // ─── System Prompt Builder ────────────────────────────────────────────────────
-function buildSystemPrompt(stage, teacherName, subject, resumeSummary) {
+// The AI addresses the candidate by first name only in everything it speaks
+// or generates — teacherName (typed at setup, possibly auto-filled from the
+// resume) is often a full name, and "Priya Sharma" read aloud every turn
+// reads as stiff/formal next to a spoken-English interview. Used everywhere
+// a prompt below builds text the candidate will actually hear; the FULL
+// teacherName is still kept as-is for the transcript/report/admin dashboard.
+function firstNameOf(fullName) {
+  const trimmed = String(fullName || '').trim();
+  return trimmed ? trimmed.split(/\s+/)[0] : '';
+}
+
+function buildSystemPrompt(stage, teacherName, subject, resumeSummary, resumeInfo) {
+  const firstName = firstNameOf(teacherName);
+
+  // Whether the candidate's previous-institute(s) are already on record shapes
+  // HOW that question must be asked during RESUME_QA (see STAGE DESCRIPTIONS
+  // below) — computed here since resumeInfo is structured data, unlike the
+  // free-text resumeSummary paragraph, which isn't guaranteed to spell this
+  // fact out explicitly.
+  const previousInstitutes = Array.isArray(resumeInfo?.previousInstitutes)
+    ? resumeInfo.previousInstitutes.filter(v => typeof v === 'string' && v.trim())
+    : [];
+  const priorInstituteNote = previousInstitutes.length
+    ? `The resume already names institute(s) worked at before the current role: ${previousInstitutes.join(', ')}. Since this part is known, ask about it as a deeper follow-up (specifically about ranks/toppers produced there) rather than re-asking what the institute(s) were.`
+    : `The resume does not mention any institute(s) worked at before the candidate's current/most recent role — ask this directly during RESUME_QA since nothing else covers it.`;
+
   const resumeBlock = resumeSummary
-    ? `\nCANDIDATE RESUME — ALREADY KNOWN, DO NOT RE-ASK:\n${resumeSummary}\n\nThe facts above were extracted from the candidate's uploaded resume before the interview started. Treat every fact stated there as already answered — never ask a question whose answer is already in this summary.\n`
+    ? `\nCANDIDATE RESUME — ALREADY KNOWN, DO NOT RE-ASK:\n${resumeSummary}\n\n${priorInstituteNote}\n\nThe facts above were extracted from the candidate's uploaded resume before the interview started. Treat every fact stated there as already answered — never ask a question whose answer is already in this summary.\n`
     : '';
 
   return `You are a warm, highly professional interviewer at Vedantu, an Indian ed-tech company, evaluating a teacher's competency for the subject: ${subject}.
-You are interviewing: ${teacherName || 'the candidate'}.
+You are interviewing: ${teacherName || 'the candidate'} — but ALWAYS address them by first name only: "${firstName || 'the candidate'}". Never use their full/last name, and never invent a different nickname for it.
 Current interview stage: ${stage}
 ${resumeBlock}
 INDIAN CONTEXT: You are speaking with an Indian teacher about the Indian education system. Use natural
 Indian-professional English (e.g. references to boards like CBSE/ICSE, exams like JEE/NEET, and terms
-like PYQs are all familiar territory — no need to explain them). Address the candidate by their name
-exactly as given above — never shorten, anglicize, or invent a nickname for it.
+like PYQs are all familiar territory — no need to explain them).
 
 STAGE DESCRIPTIONS:
 - WELLBEING   : Check how the teacher feels today; make them comfortable. 1-2 warm exchanges.
-- RESUME_QA   : [This stage asks a fixed set of pre-generated questions directly — do NOT ask about it here]
+- RESUME_QA   : This is the core interview evaluating the candidate for the teaching role — you are
+  hiring a teacher, so ask whatever questions a genuinely experienced, thorough interviewer would ask.
+  There is NO fixed number or script of questions; ask as many as you need, including real follow-ups
+  (per rule 4 below), to form a well-rounded picture — don't stop after a token handful, and don't pad
+  with filler once you're satisfied either. Ground questions in the candidate's resume (see CANDIDATE
+  RESUME block above): prioritise specifics already visible there (a named institute, an achievement,
+  years of experience, a specialization) over generic questions any candidate could be asked, and never
+  re-ask a fact already stated there. Across the stage, make sure you cover: background/experience,
+  educational qualifications, track record/achievements, teaching style, and teaching methodology (e.g.
+  PYQ practice, handling slow learners, doubt-clearing, engagement strategies) — skip any topic the
+  resume doesn't leave room to ask something specific about. Always ask, at some point, which
+  institute(s) the candidate worked at before their current/most recent role and whether they produced
+  notable exam ranks or toppers there — see the resume note above for exactly how to phrase it. A
+  genuinely thorough interview usually runs to somewhere around 6-10 questions total including
+  follow-ups, but use your judgment rather than treating that as a hard target.
 - PROBLEM_SOLVE: [This stage is handled by the UI — do NOT ask about it]
 - WRAP_UP     : [This stage is a scripted closing announcement handled by the UI — do NOT ask about it here]
 
@@ -325,22 +363,47 @@ STRICT RULES — violating these is unacceptable:
    question that digs into it, rather than defaulting to the next generic stage question. If an
    answer is vague or generic, probe once more for specifics; do not probe more than once on the
    same point.
-5. When you have enough information for the current stage and are ready to move on,
+5. When acknowledging an answer that describes a teaching approach, method, or how the candidate
+   would handle a classroom situation — i.e. there's a genuinely better or worse answer — react
+   honestly to its SUBSTANCE, not just its tone: be positive and specific if it's a sound, effective
+   approach; say plainly (but kindly) that it could be stronger if it's weak, vague, generic, or
+   dismissive — never dress up a weak answer as a polite non-reaction that sounds approving; and
+   clearly (but still kindly) flag it if what they described is an actively poor or counterproductive
+   practice, briefly saying why if there's room.
+   If what they describe is genuinely harmful, unsafe, or unethical — physically punishing students,
+   humiliating them, or otherwise abusing them, not just an ineffective method — this is NOT a conduct
+   violation by the candidate (never treat it as rudeness toward you), but it does need a direct,
+   unambiguous reaction: say plainly that you weren't expecting that / that it's not an acceptable way
+   to handle students (e.g. "I wasn't expecting that answer — that's not the right way to handle a
+   struggling student."). State it once, clearly and calmly — do not lecture at length or repeat the
+   point — then move straight on to your next question as normal.
+   For factual/biographical answers with no right-or-wrong answer (background, qualifications,
+   experience, achievements — e.g. whether they've produced toppers), do NOT grade them — instead match
+   your tone to the content: genuinely empathetic if it's negative or disappointing, warm if a genuine
+   positive, neutral otherwise. Never default to generic enthusiasm like "Wonderful!" or "Great!" unless
+   it's actually warranted.
+6. When you have enough information for the current stage and are ready to move on,
    end your response with the exact token: [STAGE_COMPLETE]
    — do NOT explain the transition, just emit the token naturally after your closing sentence.
    CRITICAL: a response containing [STAGE_COMPLETE] must be a PURE acknowledgment
    with NO question in it at all — not even a soft or forward-looking one. The system
    moves straight to a separate opening question for the next stage immediately after
    this message, without waiting for a reply, so any question asked here will never
-   actually be heard by the candidate.
-6. Never repeat a question already asked.
-7. Be warm, encouraging, and professional at all times.
-8. The candidate may answer in English, Hindi, Tamil, Telugu, or Marathi (transcribed via speech
+   actually be heard by the candidate. This is a common mistake — do NOT write your
+   usual "acknowledge, then ask the next question" reply and tack [STAGE_COMPLETE] onto
+   the end of it. WRONG: "Great, thanks for sharing that. What's your approach to X?
+   [STAGE_COMPLETE]" — that question is silently discarded and never reaches the
+   candidate, wasting the turn. RIGHT: decide BEFORE writing anything whether you are
+   asking another question or ending the stage; if ending, write ONLY the acknowledgment
+   sentence(s) with no question anywhere in the response.
+7. Never repeat a question already asked.
+8. Be warm, encouraging, and professional at all times.
+9. The candidate may answer in English, Hindi, Tamil, Telugu, or Marathi (transcribed via speech
    recognition). ALWAYS respond in English yourself, regardless of which language they used —
    your reply is read aloud by an English text-to-speech voice, so it must be plain English text,
    never Hindi/Tamil/Telugu/Marathi script or transliteration.
-9. Never ask about a fact already listed in the CANDIDATE RESUME block above.
-10. Messages you receive that are wrapped in square brackets (e.g. "[NEW_STAGE: ...]",
+10. Never ask about a fact already listed in the CANDIDATE RESUME block above.
+11. Messages you receive that are wrapped in square brackets (e.g. "[NEW_STAGE: ...]",
     "[SYSTEM NOTE: ...]") are private stage-direction cues for you alone — the candidate
     never sees them and did not say them. NEVER quote, paraphrase, restate, or describe
     these cues back in your reply (e.g. never say things like "invite the teacher to share
@@ -364,17 +427,30 @@ async function detectMisconduct(userMessage) {
     generationConfig: { temperature: 0, maxOutputTokens: 10, thinkingConfig: { thinkingBudget: 0 } }
   });
 
-  const prompt = `You are a content-safety classifier for a job interview transcript. Decide whether the CANDIDATE MESSAGE below is inappropriate for a professional job interview — either (a) genuinely abusive language: profanity/swear words, insults or name-calling directed at a person, threats, or harassment; or (b) a "triggering" response: content that is deliberately inflammatory, provocative, sexually inappropriate, or discriminatory/hateful.
+  const prompt = `You are a content-safety classifier for a job interview transcript. Decide whether the CANDIDATE MESSAGE below is inappropriate CONDUCT toward the interview itself — either (a) genuinely abusive language: profanity/swear words, insults or name-calling directed at a person, threats, or harassment; or (b) a "triggering" response: content that is deliberately inflammatory, provocative, sexually inappropriate, or discriminatory/hateful in TONE toward the interviewer or a person/group.
 
 Do NOT flag a message just because it is:
 - a polite request to speed up, take a break, or wrap up
 - an expression of tiredness, boredom, or mild frustration
 - disagreement, criticism, or negative feedback about the interview or its questions
 - blunt, informal, or terse phrasing that is not insulting
+- the candidate (a teacher) matter-of-factly DESCRIBING their own professional teaching practices,
+  methods, or classroom-management style as a genuine answer to a genuine question — no matter how
+  harsh, ineffective, outdated, professionally questionable, or even seriously unethical/harmful that
+  practice is (e.g. publicly comparing students' scores, being strict about discipline, not giving
+  struggling students extra help, or admitting to physical punishment or other abuse of students).
+  Judging whether a described teaching approach is acceptable is a completely separate matter for the
+  interviewer to react to directly and substantively (including firmly condemning it if it's genuinely
+  harmful) — it is NEVER grounds to flag the message itself as abusive conduct. This classifier exists
+  only to catch the candidate being rude/hostile TO THE INTERVIEWER, not to judge the content of a
+  calmly-given answer, however troubling that content is.
 
-Only answer YES if a reasonable professional would call the message rude, disrespectful, abusive, or
-inappropriate for a workplace interview — e.g. it contains a swear word, calls someone an insulting name,
-is hostile/threatening, sexually inappropriate, or discriminatory in tone.
+Only answer YES if the message's own LANGUAGE/TONE — directed at the interviewer, the interview
+process, or people in general — would strike a reasonable professional as rude, disrespectful, abusive,
+or inappropriate for a workplace interview — e.g. it contains a swear word, calls someone an insulting
+name, is hostile/threatening, sexually inappropriate, or discriminatory in tone. Do NOT answer YES just
+because the SUBSTANCE of a calmly-stated answer describes something harmful the candidate did or
+would do as a teacher — that is a hiring-suitability concern, not a conduct-toward-the-interview one.
 
 CANDIDATE MESSAGE: "${userMessage}"
 
@@ -394,10 +470,12 @@ async function checkConduct(userMessage, teacherName, misconductCount) {
   const flagged = await detectMisconduct(userMessage);
   if (!flagged) return { flagged: false, text: null, misconductWarning: false, misconductEnd: false };
 
+  const firstName = firstNameOf(teacherName);
+
   if (misconductCount < MAX_CONDUCT_WARNINGS) {
     return {
       flagged: true,
-      text: `${teacherName ? teacherName + ', please' : 'Please'} keep our conversation respectful and appropriate so we can continue the interview.`,
+      text: `${firstName ? firstName + ', please' : 'Please'} keep our conversation respectful and appropriate so we can continue the interview.`,
       misconductWarning: true,
       misconductEnd: false
     };
@@ -405,7 +483,7 @@ async function checkConduct(userMessage, teacherName, misconductCount) {
   // Already warned twice and it happened again — end the interview.
   return {
     flagged: true,
-    text: `Thank you for your time${teacherName ? ', ' + teacherName : ''}. We're ending the interview here due to your conduct.`,
+    text: `Thank you for your time${firstName ? ', ' + firstName : ''}. We're ending the interview here due to your conduct.`,
     misconductWarning: false,
     misconductEnd: true
   };
@@ -431,7 +509,7 @@ app.post('/api/check-conduct', async (req, res) => {
 // ─── /api/chat ────────────────────────────────────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   try {
-    const { history = [], userMessage, stage, teacherName, subject, resumeSummary, misconductCount = 0 } = req.body;
+    const { history = [], userMessage, stage, teacherName, subject, resumeSummary, resumeInfo, misconductCount = 0 } = req.body;
 
     if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
 
@@ -447,8 +525,11 @@ app.post('/api/chat', async (req, res) => {
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      systemInstruction: buildSystemPrompt(stage, teacherName, subject, resumeSummary),
-      generationConfig: { temperature: 0.75, maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } }
+      systemInstruction: buildSystemPrompt(stage, teacherName, subject, resumeSummary, resumeInfo),
+      // RESUME_QA is now an open-ended interview (see buildSystemPrompt) rather
+      // than single acknowledgment+question turns capped at ~35 words — allow
+      // more headroom so a longer follow-up/reaction isn't cut off mid-sentence.
+      generationConfig: { temperature: 0.75, maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } }
     });
 
     const chat = model.startChat({ history });
@@ -456,13 +537,28 @@ app.post('/api/chat', async (req, res) => {
     const fullText = result.response.text().trim();
 
     const stageComplete = fullText.includes('[STAGE_COMPLETE]');
-    // Defense in depth: even with rule #10 above, the model can occasionally echo
+    // Defense in depth: even with rule #11 above, the model can occasionally echo
     // the bracketed private cue it was given (e.g. "[NEW_STAGE: WRAP_UP] ...") back
     // as part of its reply — strip any such tag so it never reaches the candidate.
-    const text = fullText
+    let text = fullText
       .replace(/\[STAGE_COMPLETE\]/g, '')
       .replace(/\[(?:NEW_STAGE|SYSTEM NOTE)[^\]]*\]/gi, '')
       .trim();
+
+    // More defense in depth: rule #6 requires a [STAGE_COMPLETE] reply to be a
+    // PURE acknowledgment with no question, since the system moves straight to
+    // the next stage without waiting for an answer — a trailing question here
+    // would be spoken aloud and then simply never get heard. In practice a
+    // violating reply is always "acknowledgment, blank line, question" (the
+    // model's own paragraph-per-idea style, reinforced by rule #1's "exactly
+    // one question"), so when the rule is broken, keep only the first
+    // paragraph rather than trust the model never to slip.
+    if (stageComplete) {
+      const [firstParagraph] = text.split(/\n\s*\n/);
+      if (firstParagraph && firstParagraph.trim() !== text) {
+        text = firstParagraph.trim();
+      }
+    }
 
     res.json({ text, stageComplete, misconductWarning: false, misconductEnd: false });
   } catch (err) {
@@ -516,132 +612,6 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
   } catch (err) {
     console.error('[/api/parse-resume]', err.message);
     res.status(500).json({ error: 'Could not analyse the resume. Please try a different file.', details: err.message });
-  }
-});
-
-// ─── /api/generate-questions ──────────────────────────────────────────────────
-// Produces the fixed set of 6 resume-aware questions asked one-by-one during
-// the RESUME_QA stage — generated once up front so the interview can't drift
-// into an unbounded number of follow-ups the way the old free-flowing stage
-// chat could. Always exactly 6: 5 general resume/subject questions plus a
-// dedicated 6th about institutes worked at before the current role and any
-// ranks/toppers produced there — asked directly if the resume doesn't cover
-// it, or as a deeper follow-up if it already does.
-const RESUME_QUESTION_COUNT = 6;
-
-app.post('/api/generate-questions', async (req, res) => {
-  try {
-    const { resumeSummary, resumeInfo, subject, teacherName } = req.body;
-    if (!subject) return res.status(400).json({ error: 'subject is required' });
-
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.6, maxOutputTokens: 550, thinkingConfig: { thinkingBudget: 0 } }
-    });
-
-    const resumeBlock = resumeSummary
-      ? `CANDIDATE RESUME SUMMARY:\n${resumeSummary}\n`
-      : `No resume summary is available for this candidate — ask general but still subject-relevant questions.\n`;
-
-    const previousInstitutes = Array.isArray(resumeInfo?.previousInstitutes)
-      ? resumeInfo.previousInstitutes.filter(v => typeof v === 'string' && v.trim())
-      : [];
-    const priorInstituteContext = previousInstitutes.length
-      ? `The resume already lists these institute(s) worked at before the current role: ${previousInstitutes.join(', ')}. Since this is partly known, phrase question 6 as a deeper follow-up (e.g. ask specifically about ranks/toppers produced at those institutes) rather than re-asking what institute(s) they were.`
-      : `The resume does not mention any institute(s) the candidate worked at before their current/most recent role — ask question 6 directly since this isn't covered elsewhere.`;
-
-    const promptText = `You are preparing questions for a live spoken interview of ${teacherName || 'a candidate'}, being evaluated as a ${subject} teacher for an Indian ed-tech company (Vedantu).
-
-${resumeBlock}
-Generate EXACTLY ${RESUME_QUESTION_COUNT} interview questions for this specific candidate, in this exact order:
-
-1-5. The five most relevant questions based on their resume and the subject they teach. Prioritise questions that dig into specifics already visible in the resume (e.g. a named institute, an achievement, years of experience, a specialization) rather than generic questions any candidate could be asked. Across these 5, cover a mix of: their background/experience, educational qualifications, track record/achievements, teaching style, and teaching methodology (e.g. PYQ practice, handling slow learners) — skip any topic the resume doesn't support with enough detail to ask something specific about. Never ask about a fact already fully stated in the resume — ask a deeper follow-up about it instead.
-6. ALWAYS include this exact topic as the 6th and final question, regardless of what questions 1-5 cover: ask which institute(s) the candidate worked at before their current/most recent role, and whether they produced any notable exam ranks or toppers there. ${priorInstituteContext}
-
-Rules:
-- Each of the ${RESUME_QUESTION_COUNT} questions must be a single, self-contained question.
-- Keep each question under 30 words, in natural spoken English, professional and warm in tone.
-- Do not number the questions or add any preamble.
-
-Respond ONLY with a JSON array of exactly ${RESUME_QUESTION_COUNT} strings, in the exact order described above, no markdown fences, no extra text.`;
-
-    const result = await model.generateContent(promptText);
-    let raw = result.response.text().trim();
-    raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-
-    let questions = JSON.parse(raw);
-    if (!Array.isArray(questions)) throw new Error('Model did not return a JSON array');
-    questions = questions.filter(q => typeof q === 'string' && q.trim()).slice(0, RESUME_QUESTION_COUNT);
-    if (questions.length === 0) throw new Error('No questions generated');
-
-    res.json({ success: true, questions });
-  } catch (err) {
-    console.error('[/api/generate-questions]', err.message);
-    res.status(500).json({ error: 'Could not prepare interview questions', details: err.message });
-  }
-});
-
-// ─── /api/acknowledge-answer ───────────────────────────────────────────────────
-// Generates a brief reaction to a RESUME_QA answer before the (already
-// pre-generated) next question is asked, rather than either silence or a
-// generic upbeat "Wonderful!" that doesn't match what they actually said.
-// Two distinct reaction modes, chosen by the model per question:
-//  - Judgment questions (teaching approach/methodology — there's a genuinely
-//    better or worse answer): react honestly to the SUBSTANCE — positive and
-//    specific for a sound approach, gently corrective for a weak/vague/random
-//    one, clearly (but kindly) flagged if it's an actively poor practice.
-//  - Factual/biographical questions (background, achievements, experience —
-//    no right-or-wrong answer): match tone to content instead — empathetic if
-//    negative/disappointing, warm if a genuine positive, neutral otherwise.
-//    (An achievement question like "have you produced toppers" isn't a skill
-//    to grade — reacting "wrong answer" to a candidate's honest "no" would be
-//    unfair and out of place.)
-// Kept as its own low-stakes endpoint (separate from the conduct classifier)
-// since a flat/wrong reaction here is a UX quality issue, not something that
-// needs to block the interview — on failure it falls back to a safe neutral
-// line rather than erroring out.
-app.post('/api/acknowledge-answer', async (req, res) => {
-  try {
-    const { question, answer, teacherName } = req.body;
-    if (!answer) return res.status(400).json({ error: 'answer is required' });
-
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.6, maxOutputTokens: 80, thinkingConfig: { thinkingBudget: 0 } }
-    });
-
-    const promptText = `You are a warm, professional interviewer${teacherName ? ` speaking with ${teacherName}` : ''}, evaluating a teacher candidate. You just asked:
-"${question}"
-
-They answered:
-"${answer}"
-
-Write ONE short, natural spoken reaction (under 25 words) — a separate question will follow immediately after this, so don't ask one yourself.
-
-First decide what KIND of question this was:
-- If it asks about a teaching approach, method, opinion, or how they'd handle a classroom situation — i.e. there's a genuinely better or worse answer — judge the SUBSTANCE of what they described and react honestly. Pick exactly one:
-  • POSITIVE — the approach is sound and effective: react positively and name what's good about it briefly.
-  • NEEDS-IMPROVEMENT — the approach is weak, vague, generic, superficial, or doesn't really engage with the question (including short/dismissive answers like "I don't know" or "I'd just tell them to figure it out"): say so plainly but kindly — e.g. "That could be a bit more specific" or "That approach could be stronger." Do NOT dress this up as a neutral or backhanded-positive observation ("that's one way to..."/"that's certainly an option") — a weak answer must get a reaction that clearly signals it was weak, not a diplomatic non-reaction that sounds approving.
-  • POOR — what they described is an actively counterproductive or harmful practice: clearly (but kindly) flag it, e.g. "That's not quite the right approach" — and briefly say why if there's room. Don't pretend a bad idea is fine just to be nice.
-- If it's a factual/biographical question with no right-or-wrong answer (background, qualifications, years of experience, achievements, whether they've produced toppers, etc.), do NOT judge it as correct/incorrect — instead match your tone to the content: genuinely warm and empathetic if it's negative or disappointing (e.g. they haven't achieved something, faced a setback, answered "no"/"none" — something like "That's alright, not every teacher gets that chance" rather than a flat "I see"), warm and appreciative if it's a genuine positive, or a brief neutral acknowledgment otherwise.
-
-Do NOT default to generic enthusiasm like "Wonderful!" or "Great!" unless it's actually warranted. Do NOT let politeness blur a NEEDS-IMPROVEMENT or POOR reaction into sounding positive — the candidate should be able to tell from your tone alone whether that answer landed well or not.
-
-Rules:
-- Do NOT repeat their answer back verbatim.
-- Keep it brief and natural, like a real interviewer reacting in the moment — warm and encouraging in DELIVERY even when the content needs improvement, but honest in substance.
-
-Respond with ONLY the reaction sentence, no preamble, no quotation marks.`;
-
-    const result = await model.generateContent(promptText);
-    const text = result.response.text().trim().replace(/^"|"$/g, '');
-
-    res.json({ success: true, text: text || 'Thank you for sharing that.' });
-  } catch (err) {
-    console.error('[/api/acknowledge-answer]', err.message);
-    // Graceful fallback — a neutral line that works regardless of what was said,
-    // so a transient API failure never blocks the RESUME_QA flow.
-    res.json({ success: true, text: 'Thank you for sharing that.' });
   }
 });
 

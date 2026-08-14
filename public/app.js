@@ -21,17 +21,13 @@ const STAGE_LABELS = {
   WRAP_UP:       'Wrap Up'
 };
 
-// Number of resume-based questions asked one-by-one during RESUME_QA, before
-// moving on to the whiteboard problem-solving question: 5 general questions
-// plus a 6th always about institutes worked at before the current role and
-// any ranks/toppers produced there (see /api/generate-questions). This is a
-// hard safety cap on top of the server's own count.
-const MAX_RESUME_QUESTIONS = 6;
-
-// Fixed opening line for the one stage that still runs a free-flowing LLM chat.
-// RESUME_QA and PROBLEM_SOLVE have their own dedicated flows (see
-// beginResumeQA/launchProblemSolving), and WRAP_UP is a scripted closing
-// announcement from submitSolution() with no reply expected.
+// Fixed opening line for the one stage whose first line isn't itself
+// LLM-generated. RESUME_QA is a free-flowing LLM chat like WELLBEING, just
+// seeded with a hidden system note instead of a canned line (see
+// beginStage) so its opening question is resume-informed rather than
+// scripted; PROBLEM_SOLVE has its own dedicated flow (launchProblemSolving);
+// WRAP_UP is a scripted closing announcement from submitSolution() with no
+// reply expected.
 const STAGE_OPENERS = {
   WELLBEING: (name) => `Hi ${name}, welcome to your interview with Vedantu! Before we get started, how are you feeling today?`,
 };
@@ -127,9 +123,7 @@ const App = {
     resumeAnalyzing: false,
     resumeAnalyzed:  false,
     resumeSummary:   null, // summaryText string sent to the AI as resume context
-    resumeInfo:      null, // structured { name, yearsExperience, ... } for the confirmation card
-    resumeQuestions: null, // array of up to MAX_RESUME_QUESTIONS pre-generated questions
-    resumeQIndex:    0,    // index into resumeQuestions of the question currently being asked
+    resumeInfo:      null, // structured { name, yearsExperience, ... } — confirmation card + sent to /api/chat
     cameraEnabled:   false,
     cameraStream:    null, // active MediaStream from getUserMedia, released once the interview ends
     cameraCaptureIntervalId: null
@@ -146,6 +140,13 @@ const App = {
   _isIOSDevice() {
     const ua = navigator.userAgent || '';
     return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  },
+
+  // The AI addresses the candidate by first name only in everything it
+  // speaks — this.s.teacherName (typed at setup, possibly auto-filled from
+  // the resume) is the full name, kept as-is for the transcript/report.
+  _firstName() {
+    return (this.s.teacherName || '').trim().split(/\s+/)[0] || 'there';
   },
 
   // ── Setup ──────────────────────────────────────────────────────────────────
@@ -464,8 +465,27 @@ const App = {
       return;
     }
 
+    // RESUME_QA's opening question is LLM-generated (resume-informed) rather
+    // than a canned line — seeded with a hidden system note the same way
+    // handleSilence() nudges the model without a real candidate message. From
+    // here on the candidate's replies flow through the ordinary handleAnswer
+    // -> callChat path below, exactly like WELLBEING/WRAP_UP.
     if (stage === 'RESUME_QA') {
-      await this.beginResumeQA();
+      this.setStatus('thinking');
+      try {
+        const resp = await this.callChat(
+          '[SYSTEM NOTE: The interview questions stage begins now. Ask your first question — behave like an experienced, thorough teacher-hiring interviewer and use the candidate\'s resume to ask a well-informed, specific opening question rather than a generic one.]',
+          /*hidden*/ true
+        );
+        if (this.s.quitting) return;
+        this.renderAIMsg(resp.text);
+        this.addEntry('AI Interviewer', resp.text, STAGE_LABELS[stage]);
+        this.setStatus('speaking');
+        VoiceManager.speak(resp.text, () => {
+          if (this.s.quitting) return;
+          if (resp.stageComplete) { this.advanceStage(); } else { this.startListening(); }
+        });
+      } catch (e) { if (!this.s.quitting) this.handleErr(e); }
       return;
     }
 
@@ -476,7 +496,7 @@ const App = {
     // failure this replaced). The candidate's actual reply to this line still goes
     // through the normal LLM chat in handleAnswer.
     const openerFn = STAGE_OPENERS[stage];
-    const openerText = openerFn ? openerFn(this.s.teacherName) : null;
+    const openerText = openerFn ? openerFn(this._firstName()) : null;
     if (!openerText) { await this.advanceStage(); return; }
 
     this.renderAIMsg(openerText);
@@ -496,67 +516,6 @@ const App = {
     });
   },
 
-  // ── Resume Q&A (exactly-once, no follow-ups) ───────────────────────────────
-  // Fetches (once) the fixed set of 6 resume-aware questions and asks them
-  // strictly one at a time — no LLM follow-ups, no re-probing. This is what
-  // keeps the interview to a bounded question count instead of the open-ended
-  // [STAGE_COMPLETE]-driven chat used by WELLBEING/WRAP_UP. The 6th question
-  // is always about institutes worked at before the current role and any
-  // ranks/toppers produced there (see /api/generate-questions).
-  async beginResumeQA() {
-    this.setStatus('thinking');
-    try {
-      if (!this.s.resumeQuestions) {
-        const res = await fetch('/api/generate-questions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            resumeSummary: this.s.resumeSummary,
-            resumeInfo:    this.s.resumeInfo,
-            subject:       this.s.subject,
-            teacherName:   this.s.teacherName
-          })
-        });
-        const data = await res.json();
-        if (!res.ok || !data.success) throw new Error(data.error || 'Could not prepare interview questions');
-        this.s.resumeQuestions = data.questions.slice(0, MAX_RESUME_QUESTIONS);
-        // All questions are known now — synthesize them ahead of time so each
-        // one starts speaking instantly when its turn comes.
-        this.s.resumeQuestions.forEach(q => VoiceManager.prefetch(q));
-      }
-      if (this.s.quitting) return;
-      this.s.resumeQIndex = 0;
-      await this.askResumeQuestion();
-    } catch (e) { if (!this.s.quitting) this.handleErr(e); }
-  },
-
-  async askResumeQuestion() {
-    if (this.s.quitting) return;
-    const q = this.s.resumeQuestions[this.s.resumeQIndex];
-    const label = `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`;
-
-    this.renderAIMsg(q);
-    this.addEntry('AI Interviewer', q, label);
-
-    this.setStatus('speaking');
-    VoiceManager.speak(q, () => {
-      if (this.s.quitting) return;
-      this.startListening();
-    });
-  },
-
-  // Moves to the next of the 5 questions, or on to PROBLEM_SOLVE once all
-  // have been asked (regardless of answer quality — no follow-ups here).
-  async advanceResumeQuestion() {
-    if (this.s.quitting) return;
-    this.s.resumeQIndex++;
-    if (this.s.resumeQIndex >= this.s.resumeQuestions.length) {
-      await this.advanceStage();
-    } else {
-      await this.askResumeQuestion();
-    }
-  },
-
   async handleAnswer(text) {
     if (this.s.isProcessing || !text.trim()) return;
     this.s.isProcessing = true;
@@ -568,45 +527,9 @@ const App = {
       return this._handleProblemFollowUpAnswer(text);
     }
 
-    const label = this.stage === 'RESUME_QA'
-      ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
-      : STAGE_LABELS[this.stage];
+    const label = STAGE_LABELS[this.stage];
     this.renderUserMsg(text);
     this.addEntry('Teacher', text, label);
-
-    if (this.stage === 'RESUME_QA') {
-      // RESUME_QA doesn't call /api/chat (its questions are pre-generated and
-      // asked deterministically), so it needs its own conduct check — /api/chat's
-      // built-in check never runs for this stage otherwise.
-      this.setStatus('thinking');
-      try {
-        const conduct = await this._checkConduct(text);
-        if (this.s.quitting) { this.s.isProcessing = false; return; }
-        if (await this._handleConductResult(conduct, label)) return;
-
-        // React to what they actually said (e.g. empathetic if they say they
-        // haven't achieved something, warm if they have) rather than silently
-        // jumping to the next question — a flat, disconnected transition would
-        // make the candidate feel unheard.
-        const askedQuestion = this.s.resumeQuestions[this.s.resumeQIndex];
-        const ack = await this._getAcknowledgment(askedQuestion, text);
-        if (this.s.quitting) { this.s.isProcessing = false; return; }
-
-        this.renderAIMsg(ack);
-        this.addEntry('AI Interviewer', ack, label);
-
-        this.setStatus('speaking');
-        VoiceManager.speak(ack, () => {
-          this.s.isProcessing = false;
-          if (this.s.quitting) return;
-          setTimeout(() => { if (!this.s.quitting) this.advanceResumeQuestion(); }, 500);
-        });
-      } catch (e) {
-        this.s.isProcessing = false;
-        if (!this.s.quitting) this.handleErr(e);
-      }
-      return;
-    }
 
     this.setStatus('thinking');
 
@@ -683,25 +606,6 @@ const App = {
     return true;
   },
 
-  // Fetches a short, tone-matched reaction to a RESUME_QA answer (e.g.
-  // empathetic if they say they haven't achieved something) — never throws,
-  // since a flat/wrong tone is a UX quality issue, not something that should
-  // ever block the interview from moving to the next question.
-  async _getAcknowledgment(question, answer) {
-    try {
-      const res = await fetch('/api/acknowledge-answer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, answer, teacherName: this.s.teacherName })
-      });
-      const data = await res.json();
-      return (data && data.text) || 'Thank you for sharing that.';
-    } catch (e) {
-      console.warn('Acknowledgment error:', e);
-      return 'Thank you for sharing that.';
-    }
-  },
-
   async advanceStage() {
     this.s.stageIndex++;
     if (this.s.stageIndex >= STAGES.length) {
@@ -724,6 +628,7 @@ const App = {
       teacherName:  this.s.teacherName,
       subject:      this.s.subject,
       resumeSummary: this.s.resumeSummary,
+      resumeInfo:   this.s.resumeInfo,
       misconductCount: this.s.misconductCount
     };
 
@@ -1095,7 +1000,7 @@ const App = {
     this.showScreen('interview');
     this.updateStageUI();
 
-    const closing = `Thank you for interviewing with Vedantu, ${this.s.teacherName}. We'll get back to you with a follow-up soon.`;
+    const closing = `Thank you for interviewing with Vedantu, ${this._firstName()}. We'll get back to you with a follow-up soon.`;
     this.renderAIMsg(closing);
     this.addEntry('AI Interviewer', closing, 'Wrap Up');
 
@@ -1237,9 +1142,7 @@ const App = {
 
     const label = this.s.awaitingProblemFollowUp
       ? `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`
-      : this.stage === 'RESUME_QA'
-        ? `Question ${this.s.resumeQIndex + 1} of ${this.s.resumeQuestions.length}`
-        : STAGE_LABELS[this.stage];
+      : STAGE_LABELS[this.stage];
     this.addEntry('Teacher', '[No response — moved on after 10s of silence]', label);
 
     this.s.consecutiveSilences++;
@@ -1253,12 +1156,6 @@ const App = {
       this.s.awaitingProblemFollowUp = false;
       this.s.isProcessing = false;
       await this._advanceProblemRound();
-      return;
-    }
-
-    if (this.stage === 'RESUME_QA') {
-      this.s.isProcessing = false;
-      await this.advanceResumeQuestion();
       return;
     }
 
