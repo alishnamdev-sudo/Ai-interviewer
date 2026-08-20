@@ -2,13 +2,28 @@
  * store.js — persists completed interview reports to disk so they survive
  * past the browser session and can only be read back through the
  * password-protected admin API (see server.js), never by the candidate.
+ *
+ * The storage root is configurable via PERSISTENT_DATA_DIR so it can point at
+ * a mounted persistent disk in production — most hosts (Render included) wipe
+ * the default app directory on every redeploy/restart, which would silently
+ * delete every past report (and, via server.js's RECORDINGS_DIR, every saved
+ * interview recording) otherwise.
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const DATA_DIR = path.join(__dirname, 'data', 'reports');
+const DATA_ROOT = process.env.PERSISTENT_DATA_DIR
+  ? path.resolve(process.env.PERSISTENT_DATA_DIR)
+  : path.join(__dirname, 'data');
+const DATA_DIR = path.join(DATA_ROOT, 'reports');
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+if (!process.env.PERSISTENT_DATA_DIR) {
+  console.warn(`\n⚠️  PERSISTENT_DATA_DIR is not set — reports and recordings are stored under ${DATA_ROOT}.`);
+  console.warn('   On most hosts (Render included) this directory is WIPED on every redeploy/restart.');
+  console.warn('   Attach a persistent disk and set PERSISTENT_DATA_DIR to its mount path to keep them.\n');
+}
 
 const ID_RE = /^[0-9a-f-]+$/i;
 

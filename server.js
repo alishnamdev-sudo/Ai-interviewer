@@ -626,7 +626,14 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
 // MediaRecorder support at all and produces mp4 instead — recorder.js detects
 // this client-side and tells us which extension to use via ?ext=, so an
 // iOS-recorded interview doesn't get silently saved as a broken .webm file.
-const RECORDINGS_DIR = path.join(__dirname, 'data', 'recordings');
+//
+// Shares the same PERSISTENT_DATA_DIR root as store.js's reports (see there
+// for why this matters) — a report's recordingId is meaningless if the actual
+// file it points to got wiped by an unrelated redeploy.
+const RECORDINGS_DIR = path.join(
+  process.env.PERSISTENT_DATA_DIR ? path.resolve(process.env.PERSISTENT_DATA_DIR) : path.join(__dirname, 'data'),
+  'recordings'
+);
 fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
 // Client-generated crypto.randomUUID() — validated strictly since it becomes
