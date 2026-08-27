@@ -94,7 +94,7 @@ const MAX_CONDUCT_WARNINGS = 2;
 const CAMERA_CAPTURE_INTERVAL_MS = 30000;
 
 const Timer = {
-  remaining: SOLVE_SECONDS,
+  remaining: 0,
   intervalId: null,
   onExpire: null,
 
