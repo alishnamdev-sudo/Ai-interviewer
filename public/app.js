@@ -267,9 +267,65 @@ const App = {
     // unsupported browser just means no recording — never a blocked interview.
     await Recorder.start(this.s.cameraStream);
 
+    // Request fullscreen mode
+    await this._requestFullscreen();
+
+    // Set up fullscreen and tab-switching monitoring
+    this._setupFullscreenMonitoring();
+    this._setupTabSwitchingDetection();
+
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
+  },
+
+  // ── Fullscreen Management ──────────────────────────────────────────────────
+  async _requestFullscreen() {
+    try {
+      const elem = document.documentElement;
+      if (elem.requestFullscreen) {
+        await elem.requestFullscreen();
+      } else if (elem.webkitRequestFullscreen) {
+        await elem.webkitRequestFullscreen();
+      } else if (elem.mozRequestFullScreen) {
+        await elem.mozRequestFullScreen();
+      } else if (elem.msRequestFullscreen) {
+        await elem.msRequestFullscreen();
+      }
+    } catch (err) {
+      console.warn('Fullscreen request failed:', err);
+      this.showToast('⚠️ Please switch to fullscreen mode for the best interview experience.', 'warn');
+    }
+  },
+
+  _setupFullscreenMonitoring() {
+    const checkFullscreen = () => {
+      const isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement);
+      if (!isFullscreen && !this.s.quitting) {
+        this.showToast('⚠️ Please return to fullscreen mode to continue the interview.', 'warn');
+        this._requestFullscreen().catch(() => {});
+      }
+    };
+
+    document.addEventListener('fullscreenchange', checkFullscreen);
+    document.addEventListener('webkitfullscreenchange', checkFullscreen);
+    document.addEventListener('mozfullscreenchange', checkFullscreen);
+    document.addEventListener('msfullscreenchange', checkFullscreen);
+  },
+
+  _setupTabSwitchingDetection() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && !this.s.quitting) {
+        this.showToast('⚠️ Tab switching is not allowed during the interview. Please return to this tab.', 'warn');
+        this.addEntry('System', '[Candidate switched tabs — warning issued]', STAGE_LABELS[this.stage] || 'Interview');
+      }
+    });
+
+    window.addEventListener('blur', () => {
+      if (!this.s.quitting) {
+        this.addEntry('System', '[Browser window lost focus]', STAGE_LABELS[this.stage] || 'Interview');
+      }
+    });
   },
 
   // ── Camera Access (periodic engagement snapshots) ─────────────────────────
@@ -681,21 +737,20 @@ const App = {
     this.clearSilenceTimer(); // whiteboard uses its own 90s Timer, not this
     // Spoken after every solution submission — warm it once up front.
     VoiceManager.prefetch('Thank you for sharing your approach.');
-    this.s.problemQuestions   = await this._fetchProblemQuestions(this.s.subject, PROBLEM_SOLVE_QUESTION_COUNT);
+    this.s.problemQuestions   = [];
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
     this.s.problemCorrectCount = 0;
     this.s.consecutiveWrongProblemAnswers = 0;
 
-    const total = this.s.problemQuestions.length;
+    const total = PROBLEM_SOLVE_QUESTION_COUNT;
     // Deliberately tone-neutral (not "Wonderful!") — this fixed line always
     // fires right after the RESUME_QA acknowledgment, whose tone depends on
     // what the candidate just said, so an unconditionally upbeat opener here
     // could clash with e.g. an empathetic reaction to a disappointing answer.
     // Numericals/derivations are graded on the whole approach, so warn the
     // candidate up front that bare answers won't score well on those.
-    const anyWork = this.s.problemQuestions.some(q => q.requiresWork);
-    const announcement = `Alright, we've had a good conversation. I'd now like to see your ${this.s.subject} problem-solving approach across ${total} questions. You'll have 90 seconds for each — write with a pen or stylus, or speak your solution if you don't have one, and I'll follow up on your approach after each one.${anyWork ? ' Where a question needs a full solution, do show your complete step-by-step working — your method matters as much as the final answer.' : ''}`;
+    const announcement = `Alright, we've had a good conversation. I'd now like to see your ${this.s.subject} problem-solving approach across ${total} questions. You'll have 90 seconds for each — write with a pen or stylus, or speak your solution if you don't have one, and I'll follow up on your approach after each one. The questions will gradually increase in difficulty as you progress.`;
 
     this.renderAIMsg(announcement);
     this.addEntry('AI Interviewer', announcement, 'Problem Solving');
@@ -707,14 +762,14 @@ const App = {
     });
   },
 
-  // Pulls this subject's whiteboard questions from the server's bank of real
-  // JEE/NEET exam questions (/api/problem-questions). Falls back to the small
-  // built-in QUESTIONS_DB (questions.js) when the subject isn't covered by the
-  // bank (Computer Science, English) or the request fails — starting the
-  // problem-solving stage must never be blocked on this.
-  async _fetchProblemQuestions(subject, count) {
+  // Pulls whiteboard questions from the server's bank of real JEE/NEET exam
+  // questions (/api/problem-questions), with progressive difficulty based on
+  // roundIndex. Falls back to the small built-in QUESTIONS_DB (questions.js)
+  // when the subject isn't covered by the bank (Computer Science, English) or
+  // the request fails — starting the problem-solving stage must never be blocked.
+  async _fetchProblemQuestions(subject, count, roundIndex = 0) {
     try {
-      const res = await fetch(`/api/problem-questions?subject=${encodeURIComponent(subject)}&count=${count}`);
+      const res = await fetch(`/api/problem-questions?subject=${encodeURIComponent(subject)}&count=${count}&roundIndex=${roundIndex}`);
       if (!res.ok) throw new Error('bank returned ' + res.status);
       const data = await res.json();
       if (!Array.isArray(data.questions) || !data.questions.length) throw new Error('empty bank response');
@@ -725,9 +780,17 @@ const App = {
     }
   },
 
-  startProblemRound() {
+  async startProblemRound() {
     if (this.s.quitting) return;
-    const q = this.s.problemQuestions[this.s.problemRoundIndex];
+
+    // Fetch the next question based on the current round index (progressive difficulty)
+    const questions = await this._fetchProblemQuestions(this.s.subject, 1, this.s.problemRoundIndex);
+    if (!questions || questions.length === 0) {
+      console.error('Failed to fetch question for round', this.s.problemRoundIndex);
+      return;
+    }
+
+    const q = questions[0];
     this.s.currentQuestion = q;
     this.showScreen('problem');
     this.renderProblem(q);
@@ -759,7 +822,7 @@ const App = {
     this._renderMath(qText);
     document.getElementById('q-topic').textContent   = q.topic;
     document.getElementById('q-diff').textContent    = q.difficulty;
-    document.getElementById('q-subj').textContent    = `${q.subject} · Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length}`;
+    document.getElementById('q-subj').textContent    = `${q.subject} · Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT}`;
     document.getElementById('q-diagram-tag').classList.toggle('hidden', !q.hasDiagram);
     document.getElementById('q-work-tag').classList.toggle('hidden', !q.requiresWork);
 
@@ -941,7 +1004,7 @@ const App = {
       }
       const endEarly = !!endEarlyReason;
 
-      const roundLabel = `Problem Solving (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
+      const roundLabel = `Problem Solving (Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT})`;
 
       // Log solution in transcript
       const summary = [
@@ -1011,7 +1074,7 @@ const App = {
   // handleAnswer() via the awaitingProblemFollowUp flag rather than by stage,
   // since PROBLEM_SOLVE doesn't otherwise drive conversational turns.
   async _handleProblemFollowUpAnswer(text) {
-    const roundLabel = `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`;
+    const roundLabel = `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT})`;
     this.renderUserMsg(text);
     this.addEntry('Teacher', text, roundLabel);
 
@@ -1040,7 +1103,7 @@ const App = {
   async _advanceProblemRound() {
     if (this.s.quitting) return;
     this.s.problemRoundIndex++;
-    if (this.s.problemRoundIndex >= this.s.problemQuestions.length) {
+    if (this.s.problemRoundIndex >= PROBLEM_SOLVE_QUESTION_COUNT) {
       await this._concludeProblemSolving();
     } else {
       this.startProblemRound();
@@ -1196,7 +1259,7 @@ const App = {
     this.setMic(false);
 
     const label = this.s.awaitingProblemFollowUp
-      ? `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${this.s.problemQuestions.length})`
+      ? `Problem Solving Follow-up (Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT})`
       : STAGE_LABELS[this.stage];
     this.addEntry('Teacher', '[No response — moved on after 10s of silence]', label);
 
