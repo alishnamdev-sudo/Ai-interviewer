@@ -693,11 +693,12 @@ try {
   console.warn('⚠️  data/question-bank.json not found or unreadable — problem-solving rounds will use the built-in question set. Run: node scripts/build-question-bank.js');
 }
 
-// `count` distinct random picks, preferring Medium difficulty (the 90-second
-// whiteboard window suits medium-depth problems) and topping up from the rest
-// of the pool only if there aren't enough Medium questions.
-function pickBankQuestions(pool, count) {
+// `count` distinct random picks with progressive difficulty based on the round number.
+// Round 1-3 (index 0-2): Easy/Medium; Rounds 4-6 (index 3-5): Medium/Hard; Rounds 7-8 (index 6-7): Hard
+// Tries primary difficulty first, then falls back to secondary, then to any available.
+function pickBankQuestions(pool, count, roundIndex = 0) {
   const sample = (arr, n) => {
+    if (!arr || arr.length === 0) return [];
     const copy = arr.slice();
     for (let i = copy.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -706,11 +707,33 @@ function pickBankQuestions(pool, count) {
     return copy.slice(0, n);
   };
 
-  const medium = pool.filter(q => q.difficulty === 'Medium');
-  const picked = sample(medium, Math.min(count, medium.length));
+  // Determine primary and secondary difficulty levels based on round
+  let primaryDifficulties, secondaryDifficulties;
+
+  if (roundIndex < 3) {
+    // Rounds 0-2 (questions 1-3): Easy, then Medium
+    primaryDifficulties = ['Easy'];
+    secondaryDifficulties = ['Medium'];
+  } else if (roundIndex < 6) {
+    // Rounds 3-5 (questions 4-6): Medium, then Hard
+    primaryDifficulties = ['Medium'];
+    secondaryDifficulties = ['Hard'];
+  } else {
+    // Rounds 6-7 (questions 7-8): Hard, then Medium
+    primaryDifficulties = ['Hard'];
+    secondaryDifficulties = ['Medium'];
+  }
+
+  const primary = pool.filter(q => primaryDifficulties.includes(q.difficulty));
+  const secondary = pool.filter(q => secondaryDifficulties.includes(q.difficulty));
+  const fallback = pool.filter(q => !primaryDifficulties.includes(q.difficulty) && !secondaryDifficulties.includes(q.difficulty));
+
+  const picked = sample(primary, Math.min(count, primary.length));
   if (picked.length < count) {
-    const rest = pool.filter(q => q.difficulty !== 'Medium');
-    picked.push(...sample(rest, count - picked.length));
+    picked.push(...sample(secondary, Math.min(count - picked.length, secondary.length)));
+  }
+  if (picked.length < count) {
+    picked.push(...sample(fallback, count - picked.length));
   }
   return picked;
 }
@@ -747,13 +770,14 @@ function toClientQuestion(q) {
 app.get('/api/problem-questions', (req, res) => {
   const subject = String(req.query.subject || '');
   const count = Math.min(Math.max(parseInt(req.query.count, 10) || 3, 1), 10);
+  const roundIndex = Math.max(parseInt(req.query.roundIndex, 10) || 0, 0);
 
   const pool = questionBank[subject];
   if (!pool || !pool.length) {
     return res.status(404).json({ error: `No bank questions for subject "${subject}"` });
   }
 
-  res.json({ questions: pickBankQuestions(pool, count).map(toClientQuestion) });
+  res.json({ questions: pickBankQuestions(pool, count, roundIndex).map(toClientQuestion) });
 });
 
 // Best-effort scrub of LaTeX/markup out of text that will be spoken by TTS and
@@ -1110,7 +1134,7 @@ function attachSttStreamRelay(server) {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 const httpServer = app.listen(PORT, () => {
-  console.log('\n🎙️  Vedantu MT AI Interview');
+  console.log('\n🎙️  V-Select — AI-Powered Talent Assessment & Selection Engine');
   console.log(SARVAM_API_KEY
     ? `🗣️  Voice: Sarvam AI (streaming STT ${SARVAM_STREAM_STT_MODEL}, batch STT ${SARVAM_STT_MODEL}, TTS ${SARVAM_TTS_MODEL} · ${SARVAM_TTS_SPEAKER})`
     : '🗣️  Voice: browser Web Speech fallback — set SARVAM_API_KEY in .env to enable Sarvam STT/TTS');
