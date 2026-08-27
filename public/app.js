@@ -36,11 +36,15 @@ const STAGE_OPENERS = {
 const SUBMIT_BTN_MARKUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Submit Solution';
 
 // ─── Whiteboard Timer ─────────────────────────────────────────────────────────
-const SOLVE_SECONDS = 90;
+// Dynamic timer: 120 seconds for questions 1-3 (Level 1), 150 seconds for questions 4-8
+function getTimerDuration(roundIndex) {
+  if (roundIndex < 3) return 120; // Questions 1-3: 120 seconds
+  return 150; // Questions 4-8: 150 seconds
+}
 
 // Number of distinct problem-solving (whiteboard) questions asked during
-// PROBLEM_SOLVE, each with its own 90-second timer and a spoken follow-up
-// question about the candidate's approach once they submit — unless the
+// PROBLEM_SOLVE, each with its own dynamic timer (120s for Q1-3, 150s for Q4-8) and a spoken
+// follow-up question about the candidate's approach once they submit — unless the
 // interview ends early, see the early-exit constants below.
 const PROBLEM_SOLVE_QUESTION_COUNT = 8;
 
@@ -855,7 +859,8 @@ const App = {
     // so the wrap element already reports its real size — no rAF/timeout needed.
     Whiteboard.resize();
 
-    Timer.start(SOLVE_SECONDS, (remaining, total) => this.updateTimerUI(remaining, total), () => {
+    const timerDuration = getTimerDuration(this.s.problemRoundIndex);
+    Timer.start(timerDuration, (remaining, total) => this.updateTimerUI(remaining, total), () => {
       this.showToast("Time's up! Submitting your solution…", 'warn');
       this.submitSolution(/*auto*/ true);
     });
