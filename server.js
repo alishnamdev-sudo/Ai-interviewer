@@ -1008,6 +1008,17 @@ FULL INTERVIEW TRANSCRIPT:
 ${transcript}
 
 Problem-Solving Score: ${problemScore}/10
+
+SCORING WEIGHTAGE:
+- Problem Solving Ability: 40% weight (primary criterion)
+- Communication Skills: 15% weight
+- Subject Knowledge: 15% weight
+- Teaching Methodology: 15% weight
+- Student-Centric Approach: 15% weight
+
+Calculate overallScore as the weighted average of category scores using these percentages.
+The Problem Solving Ability score should directly reflect the ${problemScore}/10 score received,
+and have the largest impact on the final recommendation.
 ${conductBlock}
 The transcript above may contain periodic "Camera Analysis" entries — brief, plain
 behavioral observations noted from webcam snapshots taken every ~30 seconds
