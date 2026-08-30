@@ -182,10 +182,17 @@ const VoiceManager = (() => {
       ttsEngine = 'browser';
     }
 
-    // Browser recognition doubles as the runtime fallback for Sarvam STT, so
-    // set it up whenever the API exists — it's only *required* in browser mode.
-    if (SpeechRecognition) initBrowserRecognition();
-    else if (sttEngine === 'browser') return { supported: false };
+    // Browser recognition doubles as the runtime fallback for Sarvam STT.
+    // Set it up when available, but it's not *required* if Sarvam is configured.
+    if (SpeechRecognition) {
+      initBrowserRecognition();
+    } else if (sttEngine === 'browser') {
+      console.warn('[Voice] No browser Speech Recognition available, and Sarvam not configured — unsupported');
+      return { supported: false };
+    } else {
+      // Sarvam is configured but browser Speech Recognition unavailable — Sarvam-only mode
+      console.log('[Voice] Browser Speech Recognition not available, using Sarvam-only mode');
+    }
 
     return { supported: true };
   }
