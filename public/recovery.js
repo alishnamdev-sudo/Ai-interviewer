@@ -105,6 +105,11 @@ const RecoveryManager = {
     return 'More than a day ago';
   },
 
+  // Escape HTML to prevent XSS
+  escapeHtml(text) {
+    return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  },
+
   // Show recovery dialog if checkpoint exists
   showRecoveryDialogIfNeeded() {
     if (this.isRecoveryDialogOpen) return;
@@ -238,30 +243,59 @@ const RecoveryManager = {
         // Rebuild UI from conversation history
         for (let i = 0; i < checkpoint.history.length; i++) {
           const msg = checkpoint.history[i];
+          const text = msg.parts?.[0]?.text || '';
+          if (!text) continue;
+
           if (msg.role === 'user') {
-            // User message (candidate's response)
-            App.renderUserMsg(msg.parts[0]?.text || '');
+            // User message - manually add to DOM since renderUserMsg may not exist
+            const wrap = document.createElement('div');
+            wrap.className = 'msg-wrap user';
+            wrap.innerHTML = `
+              <div class="msg-avatar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg></div>
+              <div class="msg-bubble">
+                <p class="msg-text">${this.escapeHtml(text)}</p>
+              </div>
+            `;
+            messagesBox.appendChild(wrap);
+            requestAnimationFrame(() => wrap.classList.add('visible'));
           } else if (msg.role === 'model') {
-            // AI message (interviewer's question)
-            App.renderAIMsg(msg.parts[0]?.text || '', false);
+            // AI message - use the existing method
+            App.renderAIMsg(text, false);
           }
         }
+
+        // Scroll to bottom
+        messagesBox.scrollTop = messagesBox.scrollHeight;
       }
     }
 
     App.showToast('✓ Interview resumed from checkpoint', 'success');
     console.log('[RecoveryManager] Interview resumed from stage', checkpoint.stageIndex);
+    console.log('[RecoveryManager] Restored', checkpoint.history?.length || 0, 'history items');
 
-    // Resume the interview flow: wait for AI to process, then listen
+    // Resume the interview flow: wait for UI to be ready
     setTimeout(async () => {
       try {
-        App.startCheckpointing();
-        App.startListening();
+        // Ensure VoiceManager is ready
+        if (typeof VoiceManager !== 'undefined' && typeof VoiceManager.init === 'function') {
+          console.log('[RecoveryManager] Reinitializing VoiceManager');
+          await VoiceManager.init(checkpoint.spokenLang || 'en-IN');
+        }
+
+        // Start checkpointing and listening
+        if (typeof App !== 'undefined') {
+          console.log('[RecoveryManager] Starting checkpointing');
+          App.startCheckpointing();
+
+          console.log('[RecoveryManager] Starting listening');
+          App.startListening();
+        }
       } catch (e) {
-        console.error('[RecoveryManager] Error resuming interview:', e);
-        App.showToast('Error resuming interview. Retrying...', 'error');
+        console.error('[RecoveryManager] Error resuming interview:', e.message);
+        console.error('[RecoveryManager] Stack:', e.stack);
+        App.showToast('Interview resumed but audio may need restart. Tap mic to continue.', 'warn');
       }
-    }, 500);
+    }, 800);
   },
 
   // Discard checkpoint and start fresh
