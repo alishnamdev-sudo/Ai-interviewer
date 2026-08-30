@@ -117,6 +117,7 @@ async function sarvamTtsChunk(text) {
   if (!resp.ok) {
     // Read the body exactly once — a Response body can't be read twice.
     const errBody = await resp.text().catch(() => '');
+    console.error(`[sarvam-tts] API error ${resp.status} for text: "${text.slice(0, 60)}" - ${errBody.slice(0, 200)}`);
     const canRetry = !sarvamTtsPinned && [400, 404, 422].includes(resp.status)
       && !(model === 'bulbul:v2' && speaker === 'anushka');
     if (!canRetry) throw new Error(`Sarvam TTS ${resp.status}: ${errBody.slice(0, 300)}`);
@@ -133,7 +134,10 @@ async function sarvamTtsChunk(text) {
 
   const data = await resp.json();
   const audio = Array.isArray(data.audios) ? data.audios[0] : data.audio;
-  if (!audio) throw new Error('Sarvam TTS returned no audio');
+  if (!audio) {
+    console.error(`[sarvam-tts] No audio in response for text: "${text.slice(0, 60)}"`, data);
+    throw new Error('Sarvam TTS returned no audio');
+  }
 
   ttsAudioCache.set(cacheKey(), audio); // model/speaker here reflect what was actually used
   if (ttsAudioCache.size > TTS_AUDIO_CACHE_MAX) {
@@ -177,13 +181,16 @@ app.get('/api/voice-config', (req, res) => {
 app.post('/api/tts', async (req, res) => {
   try {
     if (!SARVAM_API_KEY) return res.status(503).json({ error: 'Sarvam TTS not configured' });
-    const chunks = splitTtsChunks(req.body && req.body.text);
+    const text = req.body && req.body.text;
+    const chunks = splitTtsChunks(text);
     if (!chunks.length) return res.status(400).json({ error: 'text is required' });
 
+    console.log(`[/api/tts] Processing ${chunks.length} chunk(s) for text: "${text.slice(0, 80)}..."`);
     const audios = await Promise.all(chunks.map(sarvamTtsChunk));
+    console.log(`[/api/tts] Success: ${audios.length} audio chunks returned`);
     res.json({ success: true, audios });
   } catch (err) {
-    console.error('[/api/tts]', err.message);
+    console.error('[/api/tts] FAILED:', err.message, '| Stack:', err.stack?.split('\n')[0]);
     res.status(502).json({ error: 'TTS failed', details: err.message });
   }
 });
