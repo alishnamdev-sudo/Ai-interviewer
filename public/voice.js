@@ -366,14 +366,20 @@ const VoiceManager = (() => {
       if (onEnd) onEnd();
       return;
     }
+    console.log('[Voice] speak() called with TTS engine:', ttsEngine, 'text:', text.slice(0, 60));
     // A fresh speak() supersedes anything still in flight — its onEnd (if any)
     // must not fire once we've moved on. cancelSpeech (not stopSpeaking) so the
     // NEW line's just-rendered bubble isn't snapped to fully-revealed.
     cancelSpeech();
     _cancelledByCaller = false;
 
-    if (ttsEngine === 'sarvam') sarvamSpeak(text.trim(), onEnd, onError);
-    else browserSpeak(text.trim(), onEnd, onError);
+    if (ttsEngine === 'sarvam') {
+      console.log('[Voice] Using Sarvam TTS engine');
+      sarvamSpeak(text.trim(), onEnd, onError);
+    } else {
+      console.log('[Voice] Using browser speech synthesis');
+      browserSpeak(text.trim(), onEnd, onError);
+    }
   }
 
   // Sentence-group size used for pipelined Sarvam TTS. Smaller groups mean the
@@ -403,7 +409,11 @@ const VoiceManager = (() => {
   const TTS_CACHE_MAX = 40;
 
   function getTtsAudios(text, signal) {
-    if (ttsCache.has(text)) return ttsCache.get(text);
+    if (ttsCache.has(text)) {
+      console.log('[Voice] Using cached TTS for:', text.slice(0, 60));
+      return ttsCache.get(text);
+    }
+    console.log('[Voice] Fetching TTS for:', text.slice(0, 60));
     const p = fetch('/api/tts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -411,13 +421,22 @@ const VoiceManager = (() => {
       signal
     })
       .then(r => {
-        if (!r.ok) throw new Error('TTS request failed: ' + r.status);
+        if (!r.ok) {
+          console.error('[Voice] TTS fetch failed with status:', r.status);
+          throw new Error('TTS request failed: ' + r.status);
+        }
+        console.log('[Voice] TTS fetch succeeded, parsing JSON...');
         return r.json();
       })
       .then(data => {
         const audios = (data.audios || []).filter(Boolean);
+        console.log('[Voice] Got', audios.length, 'audio chunks from TTS');
         if (!audios.length) throw new Error('empty TTS response');
         return audios;
+      })
+      .catch(e => {
+        console.error('[Voice] TTS error:', e.message);
+        throw e;
       });
     ttsCache.set(text, p);
     p.catch(() => ttsCache.delete(text)); // never cache a failure/abort
@@ -438,11 +457,13 @@ const VoiceManager = (() => {
     const gen = _speakGen; // cancelSpeech() above set the current generation
     _isSpeaking = true;
     _ttsAbort = new AbortController();
+    console.log('[Voice] Starting Sarvam TTS for:', text.slice(0, 100));
 
     // Pipelined: request every sentence group up front in parallel, then play
     // them in order as they arrive — speech starts once only the FIRST short
     // group is synthesized, instead of after the whole reply.
     const groups = ttsGroups(text);
+    console.log('[Voice] Split into', groups.length, 'groups for TTS');
     const pending = groups.map(chunk => getTtsAudios(chunk, _ttsAbort.signal));
 
     (async () => {
@@ -451,9 +472,13 @@ const VoiceManager = (() => {
       try {
         for (let gi = 0; gi < pending.length; gi++) {
           const audios = await pending[gi];
-          if (gen !== _speakGen) return; // superseded/cancelled while fetching
+          if (gen !== _speakGen) {
+            console.log('[Voice] TTS generation cancelled');
+            return;
+          }
           ttsFailures = 0;
           const groupWords = groups[gi].trim().split(/\s+/).length;
+          console.log('[Voice] Playing', audios.length, 'audio chunks for group', gi + 1, '(', groupWords, 'words)');
           // A group ≤TTS_CHUNK_CHARS comes back as one audio in practice; if
           // the server ever sub-chunks, spread the words evenly across clips.
           const perAudio = Math.ceil(groupWords / audios.length);
@@ -461,20 +486,24 @@ const VoiceManager = (() => {
           for (const b64 of audios) {
             const words = Math.min(perAudio, groupWords - allocated);
             await playOneAudio(b64, gen, { words, baseWords: baseWords + allocated });
-            if (gen !== _speakGen) return;
+            if (gen !== _speakGen) {
+              console.log('[Voice] Playback cancelled mid-chunk');
+              return;
+            }
             allocated += words;
             spokeAnything = true;
           }
           baseWords += groupWords;
           emitProgress(baseWords); // snap to the group boundary
         }
+        console.log('[Voice] All TTS playback completed successfully');
         _isSpeaking = false;
         _ttsSource = null;
         emitProgress(Infinity);
         if (onEnd) onEnd();
       } catch (e) {
         if (gen !== _speakGen) return; // deliberate cancel — stay silent
-        console.warn('Sarvam TTS failed, falling back to browser voice:', e.message || e);
+        console.warn('[Voice] Sarvam TTS failed, falling back to browser voice:', e.message || e);
         if (++ttsFailures >= MAX_ENGINE_FAILURES) ttsEngine = 'browser';
         if (spokeAnything) {
           // Part of the line was already spoken — don't restart it in the
@@ -484,6 +513,7 @@ const VoiceManager = (() => {
           emitProgress(Infinity);
           if (onEnd) onEnd();
         } else {
+          console.log('[Voice] Falling back to browser speech synthesis');
           browserSpeak(text, onEnd, onError);
         }
       }
@@ -501,6 +531,13 @@ const VoiceManager = (() => {
       try {
         // Ensure audio context is in running state
         const ctx = await ensureCtxAsync();
+        console.log('[Voice] AudioContext state:', ctx.state, 'sample rate:', ctx.sampleRate);
+
+        // Validate base64
+        if (!b64 || typeof b64 !== 'string') {
+          console.error('[Voice] Invalid base64 data');
+          return resolve();
+        }
 
         // Decode base64 audio data
         const bin = atob(b64);
@@ -508,15 +545,21 @@ const VoiceManager = (() => {
         for (let i = 0; i < bin.length; i++) {
           bytes[i] = bin.charCodeAt(i);
         }
+        console.log('[Voice] Decoded', bytes.length, 'bytes from base64');
 
         // Decode audio buffer
         ctx.decodeAudioData(bytes.buffer, (buf) => {
-          if (gen !== _speakGen) return resolve();
+          console.log('[Voice] Successfully decoded audio buffer:', buf.duration, 'seconds, channels:', buf.numberOfChannels);
+          if (gen !== _speakGen) {
+            console.log('[Voice] Audio generation cancelled, skipping playback');
+            return resolve();
+          }
 
           // Create and start audio source
           const src = ctx.createBufferSource();
           src.buffer = buf;
           src.connect(ctx.destination);
+          console.log('[Voice] Audio source created and connected');
 
           let revealTimer = null;
           if (reveal && reveal.words > 0) {
@@ -536,15 +579,27 @@ const VoiceManager = (() => {
           }
 
           src.onended = () => {
+            console.log('[Voice] Audio playback ended');
+            if (revealTimer) clearInterval(revealTimer);
+            resolve();
+          };
+
+          src.onerror = (e) => {
+            console.error('[Voice] Audio source error:', e);
             if (revealTimer) clearInterval(revealTimer);
             resolve();
           };
 
           _ttsSource = src;
-          src.start(0); // Start immediately
-          console.log('[Voice] Playing audio buffer, duration:', buf.duration);
+          try {
+            src.start(0);
+            console.log('[Voice] Audio playback started immediately');
+          } catch (e) {
+            console.error('[Voice] Failed to start audio:', e);
+            resolve();
+          }
         }, (e) => {
-          console.error('[Voice] Audio decode error:', e);
+          console.error('[Voice] Audio decode error:', e, 'error code:', e.code);
           resolve();
         });
       } catch (e) {
