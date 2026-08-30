@@ -496,51 +496,59 @@ const VoiceManager = (() => {
   // reveal: { words, baseWords } — emits word-progress evenly across the
   // clip's duration (Bulbul returns no word timestamps, but an even spread
   // over a short sentence group tracks the real cadence closely).
-  function playOneAudio(b64, gen, reveal) {
+  async function playOneAudio(b64, gen, reveal) {
     return new Promise(async (resolve) => {
       try {
-        const ctx = await ensureCtxAsync(); // Ensure context is properly resumed
+        // Ensure audio context is in running state
+        const ctx = await ensureCtxAsync();
+
+        // Decode base64 audio data
         const bin = atob(b64);
         const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        for (let i = 0; i < bin.length; i++) {
+          bytes[i] = bin.charCodeAt(i);
+        }
 
-        ctx.decodeAudioData(bytes.buffer)
-          .then(buf => {
-            if (gen !== _speakGen) return resolve();
-            const src = ctx.createBufferSource();
-            src.buffer = buf;
-            src.connect(ctx.destination);
+        // Decode audio buffer
+        ctx.decodeAudioData(bytes.buffer, (buf) => {
+          if (gen !== _speakGen) return resolve();
 
-            let revealTimer = null;
-            if (reveal && reveal.words > 0) {
-              let shown = 1;
-              emitProgress(reveal.baseWords + 1); // first word appears as audio starts
-              if (reveal.words > 1) {
-                const wordMs = (buf.duration * 1000) / reveal.words;
-                revealTimer = setInterval(() => {
-                  if (gen !== _speakGen || shown >= reveal.words) {
-                    clearInterval(revealTimer);
-                    return;
-                  }
-                  shown++;
-                  emitProgress(reveal.baseWords + shown);
-                }, wordMs);
-              }
+          // Create and start audio source
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+
+          let revealTimer = null;
+          if (reveal && reveal.words > 0) {
+            let shown = 1;
+            emitProgress(reveal.baseWords + 1);
+            if (reveal.words > 1) {
+              const wordMs = (buf.duration * 1000) / reveal.words;
+              revealTimer = setInterval(() => {
+                if (gen !== _speakGen || shown >= reveal.words) {
+                  clearInterval(revealTimer);
+                  return;
+                }
+                shown++;
+                emitProgress(reveal.baseWords + shown);
+              }, wordMs);
             }
+          }
 
-            src.onended = () => {
-              if (revealTimer) clearInterval(revealTimer);
-              resolve(); // also fires on stopSpeaking()'s stop()
-            };
-            _ttsSource = src;
-            src.start();
-          })
-          .catch(e => {
-            console.warn('Audio decode error:', e);
-            resolve(); // skip an undecodable chunk
-          });
+          src.onended = () => {
+            if (revealTimer) clearInterval(revealTimer);
+            resolve();
+          };
+
+          _ttsSource = src;
+          src.start(0); // Start immediately
+          console.log('[Voice] Playing audio buffer, duration:', buf.duration);
+        }, (e) => {
+          console.error('[Voice] Audio decode error:', e);
+          resolve();
+        });
       } catch (e) {
-        console.error('Error playing audio:', e);
+        console.error('[Voice] Error setting up audio:', e);
         resolve();
       }
     });
