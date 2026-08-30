@@ -970,7 +970,7 @@ Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
 // ─── /api/report ──────────────────────────────────────────────────────────────
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null } = req.body;
+    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null } = req.body;
 
     // Only attach a recording that actually exists on disk — a made-up id in
     // the request must not become a broken (or probing) link in the report.
@@ -1002,6 +1002,13 @@ recommendation, or the summary — evaluate the candidate purely on the substanc
 answers, exactly as you would if those entries weren't there.\n`
           : '');
 
+    const interruptionBlock = interrupted
+      ? `\nWARNING: This interview was interrupted (browser page refresh, tab close, or network disconnect) and is INCOMPLETE. ` +
+        `The transcript below contains only the portion completed before the interruption (ended at stage ${stageIndex}/3). ` +
+        `Evaluate the candidate based ONLY on the transcript available — DO NOT penalize for incomplete answers or missing problem-solving rounds. ` +
+        `Flag this as a partial submission in the "summary" for human review.\n`
+      : '';
+
     const prompt = `Generate a thorough, fair evaluation report for ${teacherName}, a ${subject} teacher, based on their interview.
 
 FULL INTERVIEW TRANSCRIPT:
@@ -1019,7 +1026,7 @@ SCORING WEIGHTAGE:
 Calculate overallScore as the weighted average of category scores using these percentages.
 The Problem Solving Ability score should directly reflect the ${problemScore}/10 score received,
 and have the largest impact on the final recommendation.
-${conductBlock}
+${conductBlock}${interruptionBlock}
 The transcript above may contain periodic "Camera Analysis" entries — brief, plain
 behavioral observations noted from webcam snapshots taken every ~30 seconds
 throughout the interview. Use these only to inform "engagementNotes" below; do not
@@ -1077,8 +1084,11 @@ Respond ONLY in this exact JSON format (no markdown fences):
     // warned once or twice who then behaved appropriately is not held against them.
     reportData.conductFlagged = !!endedForMisconduct;
     reportData.misconductCount = misconductCount;
+    reportData.interrupted = !!interrupted;
+    reportData.interruptedAt = interrupted ? interruptedAt : null;
+    reportData.stageIndex = stageIndex;
 
-    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt });
+    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted });
 
     // The report itself is never sent back to the candidate's browser — it's
     // only retrievable later through the password-protected /admin dashboard.

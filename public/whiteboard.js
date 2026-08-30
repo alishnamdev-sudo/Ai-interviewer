@@ -1,41 +1,39 @@
 /**
  * Whiteboard — pointer-driven (mouse/touch/pen) drawing canvas.
- * Keeps a stroke history so it can redraw cleanly after resize/undo/clear.
+ * Optimized for smooth, low-lag drawing with requestAnimationFrame batching.
  */
 const Whiteboard = (() => {
   let canvas, ctx, wrap;
   let dpr = window.devicePixelRatio || 1;
 
-  let tool = 'pen';           // 'pen' | 'eraser'
+  let tool = 'pen';
   let color = '#1a1a1a';
   const PEN_WIDTH = 2.6;
   const ERASER_WIDTH = 26;
+  const MIN_POINT_DISTANCE = 2; // Skip points closer than this to reduce stored points
 
-  let strokes = [];           // committed strokes: { tool, color, width, points: [{x,y}] }
+  let strokes = [];
   let currentStroke = null;
   let drawing = false;
+  let pendingDraw = false;
+  let cachedRect = null;
+  let lastPos = null;
 
   function init(canvasId, wrapId) {
     canvas = document.getElementById(canvasId);
     wrap = document.getElementById(wrapId);
-    ctx = canvas.getContext('2d');
+    ctx = canvas.getContext('2d', { alpha: false }); // Disable alpha for better perf
 
     canvas.style.touchAction = 'none';
 
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('pointerup', onPointerUp);
-    canvas.addEventListener('pointercancel', onPointerUp);
-    canvas.addEventListener('pointerleave', onPointerUp);
+    canvas.addEventListener('pointerdown', onPointerDown, { passive: true });
+    canvas.addEventListener('pointermove', onPointerMove, { passive: true });
+    canvas.addEventListener('pointerup', onPointerUp, { passive: true });
+    canvas.addEventListener('pointercancel', onPointerUp, { passive: true });
+    canvas.addEventListener('pointerleave', onPointerUp, { passive: true });
 
     const debouncedResize = debounce(resize, 150);
     window.addEventListener('resize', debouncedResize);
-    // iOS Safari's dynamic address bar showing/hiding (and, on some devices,
-    // orientation changes) doesn't reliably fire a plain `resize` event the
-    // way desktop browsers do — visualViewport.resize and orientationchange
-    // catch what window.resize alone misses there. Harmless no-ops if a
-    // browser fires all of these for the same layout change; resize() is
-    // idempotent and debounced regardless of how many listeners fire it.
     if (window.visualViewport) window.visualViewport.addEventListener('resize', debouncedResize);
     window.addEventListener('orientationchange', debouncedResize);
     resize();
@@ -54,81 +52,125 @@ const Whiteboard = (() => {
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     canvas.style.width = rect.width + 'px';
     canvas.style.height = rect.height + 'px';
+    cachedRect = null;
     redrawAll();
   }
 
   function getPos(e) {
-    const rect = canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    if (!cachedRect) cachedRect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - cachedRect.left) * dpr,
+      y: (e.clientY - cachedRect.top) * dpr
+    };
+  }
+
+  function distance(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    return Math.sqrt(dx * dx + dy * dy);
   }
 
   function paintBackground() {
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.restore();
   }
 
-  function drawStroke(stroke) {
-    if (stroke.points.length === 0) return;
+  function drawStroke(stroke, fromIndex = 0) {
+    if (stroke.points.length <= fromIndex) return;
+
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.strokeStyle = stroke.tool === 'eraser' ? '#ffffff' : stroke.color;
-    ctx.lineWidth = stroke.width;
+    ctx.lineWidth = stroke.width * dpr;
 
-    if (stroke.points.length === 1) {
-      const p = stroke.points[0];
+    const pts = stroke.points;
+    if (pts.length === 1) {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, stroke.width / 2, 0, Math.PI * 2);
+      ctx.arc(pts[0].x, pts[0].y, (stroke.width / 2) * dpr, 0, Math.PI * 2);
       ctx.fillStyle = ctx.strokeStyle;
       ctx.fill();
       return;
     }
 
+    // Draw using quadratic curves for smoother lines with fewer points
     ctx.beginPath();
-    ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
+    ctx.moveTo(pts[fromIndex].x, pts[fromIndex].y);
+
+    for (let i = fromIndex + 1; i < pts.length; i++) {
+      if (i === fromIndex + 1) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      } else {
+        const p1 = pts[i - 1];
+        const p2 = pts[i];
+        const xc = (p1.x + p2.x) / 2;
+        const yc = (p1.y + p2.y) / 2;
+        ctx.quadraticCurveTo(p1.x, p1.y, xc, yc);
+      }
     }
     ctx.stroke();
   }
 
   function redrawAll() {
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     paintBackground();
-    strokes.forEach(drawStroke);
-    ctx.restore();
+    for (const stroke of strokes) {
+      drawStroke(stroke);
+    }
+  }
+
+  function scheduleRedraw() {
+    if (pendingDraw) return;
+    pendingDraw = true;
+    requestAnimationFrame(() => {
+      if (drawing && currentStroke) {
+        redrawAll();
+        if (currentStroke.points.length > 0) {
+          drawStroke(currentStroke);
+        }
+      }
+      pendingDraw = false;
+    });
   }
 
   function onPointerDown(e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     drawing = true;
-    try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* best-effort only */ }
+    cachedRect = null;
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+
     const width = tool === 'eraser' ? ERASER_WIDTH : PEN_WIDTH;
-    currentStroke = { tool, color, width, points: [getPos(e)] };
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawStroke(currentStroke);
+    const pos = getPos(e);
+    currentStroke = { tool, color, width, points: [pos] };
+    lastPos = pos;
+
+    scheduleRedraw();
   }
 
   function onPointerMove(e) {
     if (!drawing || !currentStroke) return;
-    currentStroke.points.push(getPos(e));
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // draw just the newest segment for performance
-    const pts = currentStroke.points;
-    const seg = { ...currentStroke, points: pts.slice(-2) };
-    drawStroke(seg);
+
+    const pos = getPos(e);
+
+    // Only add point if it's far enough from last point (reduces stored points)
+    if (lastPos && distance(pos, lastPos) < MIN_POINT_DISTANCE) {
+      return;
+    }
+
+    currentStroke.points.push(pos);
+    lastPos = pos;
+    scheduleRedraw();
   }
 
   function onPointerUp(e) {
     if (!drawing) return;
     drawing = false;
+    cachedRect = null;
+
     if (currentStroke && currentStroke.points.length > 0) {
       strokes.push(currentStroke);
     }
     currentStroke = null;
+    lastPos = null;
   }
 
   function setTool(t) {

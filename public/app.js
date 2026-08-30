@@ -278,6 +278,9 @@ const App = {
     this._setupFullscreenMonitoring();
     this._setupTabSwitchingDetection();
 
+    // Start periodic checkpointing for recovery on accidental refresh
+    RecoveryManager.startCheckpointing();
+
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
@@ -1139,6 +1142,9 @@ const App = {
   // never sent back to or rendered in the candidate's browser. The candidate
   // just sees a thank-you screen; results are reviewed later via /admin.
   async generateReport() {
+    // Stop checkpointing and clear recovery data on normal completion
+    RecoveryManager.stopCheckpointing();
+
     this._stopCameraCapture();
     this.showScreen('loading');
 
@@ -1165,6 +1171,8 @@ const App = {
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
 
+      // Clear recovery data on successful submission
+      RecoveryManager.clearCheckpoint();
       this.showScreen('report');
     } catch (e) {
       this.showScreen('report');
