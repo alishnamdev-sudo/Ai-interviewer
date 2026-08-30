@@ -129,8 +129,10 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-// Submit partial data on page unload via sendBeacon (most reliable)
-window.addEventListener('unload', () => {
+// Submit partial data when page is being unloaded
+// Using pagehide instead of unload for better browser compatibility
+// and to avoid Permissions Policy violations
+window.addEventListener('pagehide', (e) => {
   try {
     const interviewActive = App.s.teacherName && (App.s.stageIndex > 0 || App.s.history.length > 0);
     if (interviewActive && !App.s.quitting) {
@@ -146,34 +148,9 @@ window.addEventListener('unload', () => {
         interruptedAt: new Date().toISOString()
       };
       navigator.sendBeacon('/api/report', JSON.stringify(data));
-      console.log('[RecoveryManager] Partial report sent via beacon');
+      console.log('[RecoveryManager] Partial report sent via beacon on pagehide');
     }
   } catch (e) {
     console.warn('[RecoveryManager] Beacon failed:', e.message);
-  }
-});
-
-// Fallback: pagehide event for better browser support
-window.addEventListener('pagehide', (e) => {
-  if (e.persisted === false) {
-    try {
-      const interviewActive = App.s.teacherName && (App.s.stageIndex > 0 || App.s.history.length > 0);
-      if (interviewActive && !App.s.quitting) {
-        const data = {
-          transcript: ReportManager ? ReportManager.getPlainTranscript() : '',
-          teacherName: App.s.teacherName,
-          subject: App.s.subject,
-          problemScore: App.s.problemScore,
-          misconductCount: App.s.misconductCount,
-          endedForMisconduct: App.s.endedForMisconduct,
-          interrupted: true,
-          stageIndex: App.s.stageIndex,
-          interruptedAt: new Date().toISOString()
-        };
-        navigator.sendBeacon('/api/report', JSON.stringify(data));
-      }
-    } catch (e) {
-      // Silently fail on unload
-    }
   }
 });
