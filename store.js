@@ -71,4 +71,33 @@ function getReport(id) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
-module.exports = { saveReport, listReports, getReport };
+function deleteReport(id) {
+  if (!ID_RE.test(id)) return false;
+  const file = path.join(DATA_DIR, `${id}.json`);
+  if (!fs.existsSync(file)) return false;
+
+  try {
+    // Get the report to find recording file if it exists
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+
+    // Delete the JSON report file
+    fs.unlinkSync(file);
+    console.log(`[store] Deleted report: ${id}`);
+
+    // Delete the recording file if it exists
+    if (record.recordingId && record.recordingExt) {
+      const recordingPath = path.join(DATA_ROOT, 'recordings', `${record.recordingId}.${record.recordingExt}`);
+      if (fs.existsSync(recordingPath)) {
+        fs.unlinkSync(recordingPath);
+        console.log(`[store] Deleted recording: ${record.recordingId}.${record.recordingExt}`);
+      }
+    }
+
+    return true;
+  } catch (e) {
+    console.error(`[store] Error deleting report ${id}:`, e.message);
+    return false;
+  }
+}
+
+module.exports = { saveReport, listReports, getReport, deleteReport };

@@ -302,6 +302,12 @@ app.get('/api/admin/reports/:id', requireAdmin, (req, res) => {
   res.json(report);
 });
 
+app.delete('/api/admin/reports/:id', requireAdmin, (req, res) => {
+  const success = store.deleteReport(req.params.id);
+  if (!success) return res.status(404).json({ error: 'Report not found' });
+  res.json({ success: true, message: 'Report deleted' });
+});
+
 // ─── System Prompt Builder ────────────────────────────────────────────────────
 // The AI addresses the candidate by first name only in everything it speaks
 // or generates — teacherName (typed at setup, possibly auto-filled from the

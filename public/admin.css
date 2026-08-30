@@ -102,9 +102,30 @@ table.reports-table { width: 100%; border-collapse: collapse; }
   letter-spacing: 0.06em;
   color: var(--text-muted);
 }
-.reports-table tbody tr { cursor: pointer; transition: background 0.15s; }
+.reports-table tbody tr { transition: background 0.15s; }
 .reports-table tbody tr:hover { background: var(--bg-card-hover); }
 .reports-table tbody tr:last-child td { border-bottom: none; }
+.reports-table .clickable-cell { cursor: pointer; }
+.reports-table .action-cell { text-align: center; }
+.btn-delete {
+  padding: 6px 12px;
+  background: #ef4444;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.btn-delete:hover {
+  background: #dc2626;
+  transform: scale(1.05);
+}
+.btn-delete:active {
+  transform: scale(0.98);
+}
 
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
 

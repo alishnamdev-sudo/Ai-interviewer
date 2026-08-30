@@ -85,6 +85,29 @@ const Admin = {
     this.showLogin();
   },
 
+  async deleteReport(id) {
+    try {
+      const res = await fetch(`/api/admin/reports/${encodeURIComponent(id)}`, {
+        method: 'DELETE'
+      });
+
+      if (res.status === 401) {
+        this.showLogin();
+        return;
+      }
+
+      if (!res.ok) {
+        alert('Failed to delete report');
+        return;
+      }
+
+      alert('Report deleted successfully');
+      this.loadReports(); // Reload the list
+    } catch (e) {
+      alert('Error deleting report: ' + e.message);
+    }
+  },
+
   showList() {
     document.getElementById('list-view').classList.remove('hidden');
     document.getElementById('detail-view').classList.add('hidden');
@@ -112,16 +135,28 @@ const Admin = {
       const date = new Date(r.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
       return `
         <tr data-id="${escapeHtml(r.id)}">
-          <td>${escapeHtml(r.teacherName)} ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}</td>
-          <td>${escapeHtml(r.subject)}</td>
-          <td>${date}</td>
-          <td style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore ?? '—'}</td>
-          <td><span class="rec-badge" style="background:${recStyle.bg};border-color:${recStyle.border};color:${recStyle.color}">${escapeHtml(rec)}</span></td>
+          <td class="clickable-cell">${escapeHtml(r.teacherName)} ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}</td>
+          <td class="clickable-cell">${escapeHtml(r.subject)}</td>
+          <td class="clickable-cell">${date}</td>
+          <td class="clickable-cell" style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore ?? '—'}</td>
+          <td class="clickable-cell"><span class="rec-badge" style="background:${recStyle.bg};border-color:${recStyle.border};color:${recStyle.color}">${escapeHtml(rec)}</span></td>
+          <td class="action-cell" onclick="event.stopPropagation()"><button class="btn-delete" data-id="${escapeHtml(r.id)}" title="Delete this report">🗑️ Delete</button></td>
         </tr>`;
     }).join('');
 
     tbody.querySelectorAll('tr').forEach(row => {
-      row.addEventListener('click', () => this.viewReport(row.dataset.id));
+      // Click anywhere in the row except the action cell to view details
+      row.querySelectorAll('.clickable-cell').forEach(cell => {
+        cell.addEventListener('click', () => this.viewReport(row.dataset.id));
+      });
+
+      // Delete button click handler
+      row.querySelector('.btn-delete').addEventListener('click', async (e) => {
+        const id = row.dataset.id;
+        if (confirm(`Are you sure you want to delete the report for ${row.dataset.name || 'this candidate'}? This cannot be undone.`)) {
+          await this.deleteReport(id);
+        }
+      });
     });
   },
 
