@@ -217,34 +217,51 @@ const RecoveryManager = {
     App.s.resumeSummary = checkpoint.resumeSummary;
     App.s.resumeAnalyzed = checkpoint.resumeAnalyzed;
 
-    // Restore transcript entries
-    if (ReportManager._entries && checkpoint.transcriptEntries) {
-      ReportManager._entries = checkpoint.transcriptEntries;
+    // Restore transcript entries through ReportManager for report generation
+    if (checkpoint.transcriptEntries && checkpoint.transcriptEntries.length > 0) {
+      checkpoint.transcriptEntries.forEach(entry => {
+        ReportManager.addEntry(entry.speaker, entry.text, entry.stage);
+      });
     }
 
     // Re-render UI to match restored state
     App.updateStageUI();
     App.showScreen('interview');
 
-    // Rebuild the transcript display
-    const chatEl = document.getElementById('chat-messages');
-    if (chatEl && checkpoint.transcriptEntries) {
-      chatEl.innerHTML = '';
-      checkpoint.transcriptEntries.forEach(entry => {
-        const msgEl = document.createElement('div');
-        msgEl.className = `message message-${entry.role.toLowerCase()}`;
-        msgEl.innerHTML = `<strong>${entry.role}:</strong> ${entry.text}`;
-        chatEl.appendChild(msgEl);
-      });
-      chatEl.scrollTop = chatEl.scrollHeight;
+    // Rebuild chat UI from history (Gemini conversation)
+    if (checkpoint.history && checkpoint.history.length > 0) {
+      const messagesBox = document.getElementById('messages');
+      if (messagesBox) {
+        // Clear existing messages
+        messagesBox.innerHTML = '';
+
+        // Rebuild UI from conversation history
+        for (let i = 0; i < checkpoint.history.length; i++) {
+          const msg = checkpoint.history[i];
+          if (msg.role === 'user') {
+            // User message (candidate's response)
+            App.renderUserMsg(msg.parts[0]?.text || '');
+          } else if (msg.role === 'model') {
+            // AI message (interviewer's question)
+            App.renderAIMsg(msg.parts[0]?.text || '', false);
+          }
+        }
+      }
     }
 
     App.showToast('✓ Interview resumed from checkpoint', 'success');
-    console.log('[RecoveryManager] Interview resumed');
+    console.log('[RecoveryManager] Interview resumed from stage', checkpoint.stageIndex);
 
-    // Resume listening/processing from where it left off
-    App.startListening();
-    App.startCheckpointing();
+    // Resume the interview flow: wait for AI to process, then listen
+    setTimeout(async () => {
+      try {
+        App.startCheckpointing();
+        App.startListening();
+      } catch (e) {
+        console.error('[RecoveryManager] Error resuming interview:', e);
+        App.showToast('Error resuming interview. Retrying...', 'error');
+      }
+    }, 500);
   },
 
   // Discard checkpoint and start fresh
