@@ -23,6 +23,21 @@
       margin-bottom: 30px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
     }
+    .btn-logout {
+      background: none;
+      border: 2px solid #ef4444;
+      color: #ef4444;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .btn-logout:hover {
+      background: #ef4444;
+      color: white;
+    }
     .header h1 {
       font-size: 32px;
       font-weight: 700;
@@ -275,8 +290,13 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>📹 HR Interview Dashboard</h1>
-      <p>Monitor all live interviews in real-time</p>
+      <div style="display: flex; justify-content: space-between; align-items: start;">
+        <div>
+          <h1>📹 HR Interview Dashboard</h1>
+          <p>Monitor all live interviews in real-time</p>
+        </div>
+        <button id="logoutBtn" class="btn-logout" onclick="logout()" title="Logout">🚪</button>
+      </div>
       <div class="stats">
         <div class="stat-box">
           <div class="stat-icon">🔴</div>
@@ -466,9 +486,45 @@
 
     autoRefreshCheckbox.addEventListener('change', setupAutoRefresh);
 
-    // Initial load and setup
-    loadStreams();
-    setupAutoRefresh();
+    // Authentication check
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/hr/session');
+        if (res.status === 401 || !res.ok) {
+          window.location.href = '/hr-login';
+          return false;
+        }
+        const data = await res.json();
+        if (!data.isHR) {
+          window.location.href = '/hr-login';
+          return false;
+        }
+        return true;
+      } catch (e) {
+        console.error('Auth check failed:', e);
+        return false;
+      }
+    }
+
+    async function logout() {
+      if (confirm('Logout from HR Dashboard?')) {
+        try {
+          await fetch('/api/hr/logout', { method: 'POST' });
+          window.location.href = '/hr-login';
+        } catch (e) {
+          console.error('Logout error:', e);
+          window.location.href = '/hr-login';
+        }
+      }
+    }
+
+    // Check authentication before loading
+    checkAuth().then(isAuth => {
+      if (isAuth) {
+        loadStreams();
+        setupAutoRefresh();
+      }
+    });
   </script>
 </body>
 </html>

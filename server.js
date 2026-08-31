@@ -292,6 +292,41 @@ app.get('/api/admin/session', (req, res) => {
   res.json({ isAdmin: !!(req.session && req.session.isAdmin) });
 });
 
+// ─── HR Dashboard Authentication ──────────────────────────────────────────────
+const HR_PASSWORD = process.env.HR_PASSWORD || process.env.ADMIN_PASSWORD || 'hr_password';
+
+function requireHR(req, res, next) {
+  if (req.session && req.session.isHR) return next();
+  res.status(401).json({ error: 'Not authenticated' });
+}
+
+app.post('/api/hr/login', (req, res) => {
+  if (isRateLimited(req.ip)) {
+    return res.status(429).json({ error: 'Too many attempts. Try again later.' });
+  }
+
+  const expected = Buffer.from(HR_PASSWORD);
+  const given = Buffer.from(String(req.body.password || ''));
+  const match = expected.length === given.length && crypto.timingSafeEqual(expected, given);
+
+  if (!match) {
+    recordFailedAttempt(req.ip);
+    return res.status(401).json({ error: 'Incorrect password' });
+  }
+
+  req.session.isHR = true;
+  res.json({ success: true });
+});
+
+app.post('/api/hr/logout', (req, res) => {
+  req.session.isHR = false;
+  res.json({ success: true });
+});
+
+app.get('/api/hr/session', (req, res) => {
+  res.json({ isHR: !!(req.session && req.session.isHR) });
+});
+
 app.get('/api/admin/reports', requireAdmin, (req, res) => {
   res.json(store.listReports());
 });
@@ -1240,13 +1275,18 @@ app.get('/hr-watch/:streamId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'hr-watch.html'));
 });
 
-// HR dashboard - list all active streams
-app.get('/hr-dashboard', (req, res) => {
+// HR login page (public)
+app.get('/hr-login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'hr-login.html'));
+});
+
+// HR dashboard - requires authentication
+app.get('/hr-dashboard', requireHR, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'hr-dashboard.html'));
 });
 
-// API endpoint to get all active streams
-app.get('/api/streams/active', (req, res) => {
+// API endpoint to get all active streams (requires HR auth)
+app.get('/api/streams/active', requireHR, (req, res) => {
   const activeStreams = Array.from(liveStreams.entries()).map(([streamId, stream]) => ({
     streamId,
     candidateName: stream.candidateName,
