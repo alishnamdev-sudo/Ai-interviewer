@@ -162,6 +162,18 @@ const App = {
 
   get stage() { return STAGES[this.s.stageIndex]; },
 
+  // Cleanup on page unload - end stream even if user closes tab/navigates away
+  _setupUnloadHandler() {
+    window.addEventListener('beforeunload', () => {
+      if (this.s.streamId && !this.s.quitting) {
+        const streamEndPayload = JSON.stringify({ streamId: this.s.streamId });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/stream/end', streamEndPayload);
+        }
+      }
+    });
+  },
+
   // iPadOS reports as "MacIntel" with touch points (no more "iPad" in its UA
   // by default), so both checks are needed to catch every iOS/iPadOS device.
   _isIOSDevice() {
@@ -265,6 +277,7 @@ const App = {
     }
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
     this._startCameraCapture();
+    this._setupUnloadHandler(); // Setup cleanup for stream when page closes
 
     // Initiate live stream for HR monitoring (fire-and-forget, no await)
     try {
@@ -1180,13 +1193,19 @@ const App = {
     this._releaseCameraStream();
     VoiceManager.releaseMic(); // the STT capture stream, separate from the recorder's
 
-    // End the HR live stream
+    // End the HR live stream (critical - must happen before page unload)
     if (this.s.streamId) {
-      fetch('/api/stream/end', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ streamId: this.s.streamId })
-      }).catch(e => console.warn('[Stream] Failed to end stream:', e));
+      const streamEndPayload = JSON.stringify({ streamId: this.s.streamId });
+      // Use sendBeacon for reliability if available (survives page unload)
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/stream/end', streamEndPayload);
+      } else {
+        fetch('/api/stream/end', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: streamEndPayload
+        }).catch(e => console.warn('[Stream] Failed to end stream:', e));
+      }
     }
 
     try {

@@ -1287,15 +1287,25 @@ app.get('/hr-dashboard', requireHR, (req, res) => {
 
 // API endpoint to get all active streams (requires HR auth)
 app.get('/api/streams/active', requireHR, (req, res) => {
-  const activeStreams = Array.from(liveStreams.entries()).map(([streamId, stream]) => ({
-    streamId,
-    candidateName: stream.candidateName,
-    subject: stream.subject,
-    startTime: stream.startTime,
-    duration: Math.floor((Date.now() - stream.startTime) / 1000),
-    viewerCount: stream.viewers.size,
-    watchUrl: `/hr-watch/${streamId}`
-  }));
+  const activeStreams = Array.from(liveStreams.entries())
+    .filter(([streamId, stream]) => {
+      // Clean up streams older than 10 minutes (likely abandoned)
+      const age = Date.now() - stream.startTime;
+      if (age > 10 * 60 * 1000 && stream.viewers.size === 0) {
+        liveStreams.delete(streamId);
+        return false;
+      }
+      return true;
+    })
+    .map(([streamId, stream]) => ({
+      streamId,
+      candidateName: stream.candidateName,
+      subject: stream.subject,
+      startTime: stream.startTime,
+      duration: Math.floor((Date.now() - stream.startTime) / 1000),
+      viewerCount: stream.viewers.size,
+      watchUrl: `/hr-watch/${streamId}`
+    }));
 
   res.json({ streams: activeStreams, count: activeStreams.length });
 });
