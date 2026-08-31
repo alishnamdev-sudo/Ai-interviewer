@@ -1312,10 +1312,14 @@ attachSttStreamRelay(httpServer);
 const liveStreamWss = new WebSocketServer({ server: httpServer, path: '/api/stream/watch' });
 
 liveStreamWss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const streamId = url.searchParams.get('id');
+  // Extract stream ID from query string
+  const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
+  const streamId = urlParams.get('id');
+
+  console.log(`[Stream] WebSocket connection attempt: streamId=${streamId}`);
 
   if (!streamId || !liveStreams.has(streamId)) {
+    console.log(`[Stream] Invalid stream ID: ${streamId}`);
     ws.close(1008, 'Invalid stream');
     return;
   }
