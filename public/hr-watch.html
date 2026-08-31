@@ -66,11 +66,20 @@
       justify-content: center;
       position: relative;
       overflow: hidden;
+      flex-direction: column;
     }
     video {
       width: 100%;
-      height: 100%;
+      flex: 1;
       object-fit: contain;
+      background: #000;
+    }
+    #audioVisualizer {
+      display: block;
+      width: 100%;
+      height: 60px;
+      background: #1a1a1a;
+      border-top: 1px solid #333;
     }
     .no-video {
       color: #999;
@@ -177,9 +186,12 @@
 
     <div class="main-content">
       <div class="video-area">
-        <video id="liveVideo" playsinline controls></video>
-        <div class="no-video" id="noVideoMsg" style="display: none;">
-          Waiting for interview to start...
+        <div style="width: 100%; height: 100%; display: flex; flex-direction: column;">
+          <video id="liveVideo" playsinline controls style="flex: 1; background: #000;"></video>
+          <canvas id="audioVisualizer" style="width: 100%; height: 60px; background: #1a1a1a;"></canvas>
+          <div class="no-video" id="noVideoMsg" style="display: none;">
+            Waiting for interview to start...
+          </div>
         </div>
       </div>
 
@@ -216,6 +228,8 @@
 
   <script>
     const video = document.getElementById('liveVideo');
+    const canvas = document.getElementById('audioVisualizer');
+    const canvasCtx = canvas.getContext('2d');
     const statusEl = document.getElementById('status');
     const candidateNameEl = document.getElementById('candidateName');
     const subjectEl = document.getElementById('subject');
@@ -230,6 +244,101 @@
     let streamStartTime = null;
     let videoChunks = [];
     let isConnected = false;
+
+    // Audio visualizer setup
+    let audioContext = null;
+    let analyser = null;
+    let animationId = null;
+    const BAR_COUNT = 32;
+    const COLOR_BARS = '#667eea';
+    const COLOR_BG = '#1a1a1a';
+
+    // ─── Audio Visualizer ─────────────────────────────────────────────────────
+    function initAudioVisualizer() {
+      try {
+        // Create audio context from video element
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        if (audioContext.state === 'suspended') {
+          audioContext.resume();
+        }
+
+        if (!analyser) {
+          const source = audioContext.createMediaElementAudioSource(video);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 256;
+          source.connect(analyser);
+          analyser.connect(audioContext.destination);
+        }
+
+        // Start drawing visualizer
+        if (!animationId) {
+          drawVisualizer();
+        }
+      } catch (e) {
+        console.warn('Audio visualizer not available:', e);
+      }
+    }
+
+    function drawVisualizer() {
+      animationId = requestAnimationFrame(drawVisualizer);
+
+      if (!analyser || !canvasCtx) return;
+
+      // Set canvas size
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+
+      // Get frequency data
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(dataArray);
+
+      // Draw background
+      canvasCtx.fillStyle = COLOR_BG;
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw bars
+      const barWidth = (canvas.width / BAR_COUNT) * 0.8;
+      const barGap = (canvas.width / BAR_COUNT) * 0.2;
+      const maxFrequencies = Math.floor(dataArray.length / BAR_COUNT);
+
+      for (let i = 0; i < BAR_COUNT; i++) {
+        // Get average frequency for this bar
+        const start = i * maxFrequencies;
+        const end = start + maxFrequencies;
+        let sum = 0;
+        for (let j = start; j < end && j < dataArray.length; j++) {
+          sum += dataArray[j];
+        }
+        const avg = sum / maxFrequencies;
+
+        // Normalize to canvas height
+        const barHeight = (avg / 255) * canvas.height;
+        const x = i * (barWidth + barGap);
+        const y = canvas.height - barHeight;
+
+        // Draw bar with gradient
+        const gradient = canvasCtx.createLinearGradient(0, y, 0, canvas.height);
+        gradient.addColorStop(0, COLOR_BARS);
+        gradient.addColorStop(1, '#764ba2');
+
+        canvasCtx.fillStyle = gradient;
+        canvasCtx.fillRect(x, y, barWidth, barHeight);
+
+        // Draw top highlight
+        canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+        canvasCtx.fillRect(x, y - 2, barWidth, 2);
+      }
+    }
+
+    function stopVisualizer() {
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+    }
 
     function getStreamId() {
       const path = window.location.pathname;
@@ -345,6 +454,8 @@
               subjectEl.textContent = msg.subject || '—';
               startTimer();
               noVideoMsg.style.display = 'none';
+              // Start audio visualizer when metadata received
+              initAudioVisualizer();
             }
           } catch (e) {
             console.error('Failed to parse message:', e);
@@ -375,6 +486,7 @@
         console.error('WebSocket error:', error);
         showError('Stream connection error');
         updateStatus('Error', 'disconnected');
+        stopVisualizer();
       };
 
       ws.onclose = () => {
@@ -382,6 +494,7 @@
         isConnected = false;
         updateStatus('Disconnected', 'disconnected');
         showError('Stream connection closed');
+        stopVisualizer();
         // Try to reconnect after 3 seconds
         setTimeout(connectWebSocket, 3000);
       };
