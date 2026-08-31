@@ -1240,6 +1240,26 @@ app.get('/hr-watch/:streamId', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'hr-watch.html'));
 });
 
+// HR dashboard - list all active streams
+app.get('/hr-dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'hr-dashboard.html'));
+});
+
+// API endpoint to get all active streams
+app.get('/api/streams/active', (req, res) => {
+  const activeStreams = Array.from(liveStreams.entries()).map(([streamId, stream]) => ({
+    streamId,
+    candidateName: stream.candidateName,
+    subject: stream.subject,
+    startTime: stream.startTime,
+    duration: Math.floor((Date.now() - stream.startTime) / 1000),
+    viewerCount: stream.viewers.size,
+    watchUrl: `/hr-watch/${streamId}`
+  }));
+
+  res.json({ streams: activeStreams, count: activeStreams.length });
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 const httpServer = app.listen(PORT, () => {
   console.log('\n🎙️  V-Select — AI-Powered Talent Assessment & Selection Engine');
