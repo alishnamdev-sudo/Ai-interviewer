@@ -1220,44 +1220,6 @@ app.post('/api/stream/start', (req, res) => {
   res.json({ streamId });
 });
 
-// Receive and broadcast stream chunk to all HR viewers
-app.post('/api/stream/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
-  const streamId = String(req.query.id || '');
-  const stream = liveStreams.get(streamId);
-
-  if (!stream) {
-    return res.status(404).json({ error: 'Stream not found' });
-  }
-
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    return res.status(400).json({ error: 'Empty chunk' });
-  }
-
-  // Update last activity time - stream is alive
-  stream.lastActivityTime = Date.now();
-
-  // Broadcast to all connected HR viewers
-  // Send as binary: 4-byte size prefix + chunk data
-  const sizeBuffer = Buffer.alloc(4);
-  sizeBuffer.writeUInt32BE(req.body.length, 0);
-  const chunkMessage = Buffer.concat([sizeBuffer, req.body]);
-
-  const viewers = Array.from(stream.viewers);
-  const deadViewers = [];
-
-  viewers.forEach(ws => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(chunkMessage);
-    } else {
-      deadViewers.push(ws);
-    }
-  });
-
-  // Clean up dead connections
-  deadViewers.forEach(ws => stream.viewers.delete(ws));
-
-  res.json({ success: true, viewerCount: stream.viewers.size });
-});
 
 // End a live stream session (called when interview ends)
 app.post('/api/stream/end', (req, res) => {
@@ -1347,41 +1309,103 @@ const httpServer = app.listen(PORT, () => {
 attachSttStreamRelay(httpServer);
 
 // ─── WebSocket: Live Interview Stream (HR viewers) ────────────────────────────
-function attachLiveStreamRelay(httpServer) {
-  const liveStreamWss = new WebSocketServer({ server: httpServer, path: '/api/stream/watch' });
-  liveStreamWss.on('connection', (ws, req) => {
-    const q = new URL(req.url, 'http://localhost').searchParams;
-    const streamId = q.get('id');
+const liveStreamWss = new WebSocketServer({ server: httpServer, path: '/api/stream/watch' });
 
-    if (!streamId || !liveStreams.has(streamId)) {
-      ws.close(1008, 'Invalid or expired stream');
-      return;
+liveStreamWss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const streamId = url.searchParams.get('id');
+
+  if (!streamId || !liveStreams.has(streamId)) {
+    ws.close(1008, 'Invalid stream');
+    return;
+  }
+
+  const stream = liveStreams.get(streamId);
+  stream.viewers.add(ws);
+
+  console.log(`[Stream] Viewer connected to ${streamId}`);
+
+  // Send metadata
+  ws.send(JSON.stringify({
+    type: 'metadata',
+    candidateName: stream.candidateName,
+    subject: stream.subject,
+    startTime: stream.startTime
+  }));
+
+  // Send buffered chunks
+  const buffer = streamChunkBuffers.get(streamId) || [];
+  buffer.forEach(chunk => {
+    if (ws.readyState === ws.OPEN) {
+      const sizeBuffer = Buffer.alloc(4);
+      sizeBuffer.writeUInt32BE(chunk.length, 0);
+      ws.send(Buffer.concat([sizeBuffer, chunk]));
     }
-
-    const stream = liveStreams.get(streamId);
-    stream.viewers.add(ws);
-
-    // Send stream metadata to the viewer (as text, not binary)
-    ws.send(JSON.stringify({
-      type: 'metadata',
-      candidateName: stream.candidateName,
-      subject: stream.subject,
-      startTime: stream.startTime
-    }), { binary: false });
-
-    ws.on('close', () => {
-      stream.viewers.delete(ws);
-      // Clean up empty streams
-      if (stream.viewers.size === 0 && Date.now() - stream.startTime > 60000) {
-        // Keep stream for 1 minute after last viewer disconnects, in case they reconnect
-        setTimeout(() => {
-          if (stream.viewers.size === 0) {
-            liveStreams.delete(streamId);
-          }
-        }, 60000);
-      }
-    });
   });
-}
 
-attachLiveStreamRelay(httpServer);
+  ws.on('close', () => {
+    stream.viewers.delete(ws);
+    console.log(`[Stream] Viewer disconnected from ${streamId}`);
+  });
+
+  ws.on('error', (err) => {
+    console.error(`[Stream] WebSocket error:`, err.message);
+    stream.viewers.delete(ws);
+  });
+});
+
+// Stream chunk buffer for each viewer (holds recent chunks for new connections)
+const streamChunkBuffers = new Map(); // streamId -> [chunks]
+const MAX_BUFFER_SIZE = 50; // Keep last 50 chunks (~5 minutes at 10s intervals)
+
+// Update chunk buffer when chunks arrive
+app.post('/api/stream/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
+  const streamId = String(req.query.id || '');
+  const stream = liveStreams.get(streamId);
+
+  if (!stream) {
+    return res.status(404).json({ error: 'Stream not found' });
+  }
+
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: 'Empty chunk' });
+  }
+
+  // Update last activity time - stream is alive
+  stream.lastActivityTime = Date.now();
+
+  // Store chunk in buffer for new viewers
+  if (!streamChunkBuffers.has(streamId)) {
+    streamChunkBuffers.set(streamId, []);
+  }
+  const buffer = streamChunkBuffers.get(streamId);
+  buffer.push(req.body);
+  if (buffer.length > MAX_BUFFER_SIZE) {
+    buffer.shift();
+  }
+
+  // Broadcast to all connected HR viewers
+  const sizeBuffer = Buffer.alloc(4);
+  sizeBuffer.writeUInt32BE(req.body.length, 0);
+  const chunkMessage = Buffer.concat([sizeBuffer, req.body]);
+
+  const viewers = Array.from(stream.viewers);
+  const deadViewers = [];
+
+  viewers.forEach(ws => {
+    if (ws && ws.readyState === ws.OPEN) {
+      try {
+        ws.send(chunkMessage);
+      } catch (e) {
+        deadViewers.push(ws);
+      }
+    } else {
+      deadViewers.push(ws);
+    }
+  });
+
+  // Clean up dead connections
+  deadViewers.forEach(ws => stream.viewers.delete(ws));
+
+  res.json({ success: true, viewerCount: stream.viewers.size });
+});
