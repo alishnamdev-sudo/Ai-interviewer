@@ -1233,6 +1233,9 @@ app.post('/api/stream/chunk', express.raw({ type: 'application/octet-stream', li
     return res.status(400).json({ error: 'Empty chunk' });
   }
 
+  // Update last activity time - stream is alive
+  stream.lastActivityTime = Date.now();
+
   // Broadcast to all connected HR viewers
   // Send as binary: 4-byte size prefix + chunk data
   const sizeBuffer = Buffer.alloc(4);
@@ -1287,14 +1290,36 @@ app.get('/hr-dashboard', requireHR, (req, res) => {
 
 // API endpoint to get all active streams (requires HR auth)
 app.get('/api/streams/active', requireHR, (req, res) => {
+  const now = Date.now();
   const activeStreams = Array.from(liveStreams.entries())
     .filter(([streamId, stream]) => {
-      // Clean up streams older than 10 minutes (likely abandoned)
-      const age = Date.now() - stream.startTime;
-      if (age > 10 * 60 * 1000 && stream.viewers.size === 0) {
+      const age = now - stream.startTime;
+
+      // Clean up streams with no activity:
+      // - Older than 2 minutes with no chunks received
+      // - Older than 3 hours (max interview duration)
+      // - No viewers + stale (no new data)
+
+      if (age > 3 * 60 * 60 * 1000) {
+        // Stream is over 3 hours old - definitely dead
+        console.log(`[Stream] Cleaning up old stream ${streamId} (age: ${Math.round(age/1000)}s)`);
         liveStreams.delete(streamId);
         return false;
       }
+
+      // Mark when stream was last active (on first viewer connection)
+      if (!stream.lastActivityTime) {
+        stream.lastActivityTime = now;
+      }
+
+      const inactiveTime = now - stream.lastActivityTime;
+      if (inactiveTime > 2 * 60 * 1000 && stream.viewers.size === 0) {
+        // No activity for 2 minutes and no viewers - dead stream
+        console.log(`[Stream] Cleaning up inactive stream ${streamId}`);
+        liveStreams.delete(streamId);
+        return false;
+      }
+
       return true;
     })
     .map(([streamId, stream]) => ({
@@ -1302,7 +1327,7 @@ app.get('/api/streams/active', requireHR, (req, res) => {
       candidateName: stream.candidateName,
       subject: stream.subject,
       startTime: stream.startTime,
-      duration: Math.floor((Date.now() - stream.startTime) / 1000),
+      duration: Math.floor((now - stream.startTime) / 1000),
       viewerCount: stream.viewers.size,
       watchUrl: `/hr-watch/${streamId}`
     }));
