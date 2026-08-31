@@ -20,6 +20,7 @@ const Recorder = {
   recordingExt:  'webm', // actual container in use — see start(); iOS Safari records mp4
   audioStream:   null,
   failed:        false,
+  streamId:      null, // for HR live streaming
   // Chunks must be appended server-side in capture order, so uploads are
   // chained on a single promise queue rather than fired in parallel.
   uploadQueue:   Promise.resolve(),
@@ -29,9 +30,12 @@ const Recorder = {
   /**
    * Starts recording using the already-granted camera stream's video track
    * plus a freshly-requested mic track. Returns true if recording started.
+   * @param {MediaStream} cameraStream
+   * @param {string} streamId - optional HR live stream ID for broadcasting chunks
    */
-  async start(cameraStream) {
+  async start(cameraStream, streamId = null) {
     if (this.mediaRecorder || !window.MediaRecorder || !cameraStream) return false;
+    this.streamId = streamId;
 
     try {
       this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -101,6 +105,15 @@ const Recorder = {
         console.warn('Recording upload failed — recording abandoned:', e);
         this.failed = true;
       });
+
+    // Broadcast chunk to HR live stream (fire-and-forget, doesn't block recording)
+    if (this.streamId) {
+      fetch(`/api/stream/chunk?id=${this.streamId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: blob
+      }).catch(e => console.warn('Stream broadcast failed (non-fatal):', e));
+    }
   },
 
   /**

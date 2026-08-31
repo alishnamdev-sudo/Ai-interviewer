@@ -152,7 +152,8 @@ const App = {
     resumeInfo:      null, // structured { name, yearsExperience, ... } — confirmation card + sent to /api/chat
     cameraEnabled:   false,
     cameraStream:    null, // active MediaStream from getUserMedia, released once the interview ends
-    cameraCaptureIntervalId: null
+    cameraCaptureIntervalId: null,
+    streamId:        null // HR live stream ID for real-time monitoring
   },
 
   // The AI bubble currently being revealed word-by-word in sync with speech:
@@ -265,11 +266,35 @@ const App = {
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
     this._startCameraCapture();
 
+    // Initiate live stream for HR monitoring (fire-and-forget, no await)
+    try {
+      const streamRes = await fetch('/api/stream/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recordingId: `temp-${Date.now()}`,
+          candidateName: this.s.teacherName,
+          subject: this.s.subject
+        })
+      });
+      if (streamRes.ok) {
+        const { streamId } = await streamRes.json();
+        this.s.streamId = streamId;
+        const watchUrl = `${window.location.origin}/hr-watch/${streamId}`;
+        console.log('[Stream] Live monitoring initiated:', streamId);
+        console.log('[Stream] HR watch URL:', watchUrl);
+        // Store for potential display in UI
+        this.s.streamWatchUrl = watchUrl;
+      }
+    } catch (e) {
+      console.warn('[Stream] Failed to initiate live stream:', e);
+    }
+
     // Record the full interview (camera video + mic audio), streamed to the
     // server in chunks as it happens. Requested here, still within the "Begin
     // Interview" click's permission context. Best-effort: a denied mic or
     // unsupported browser just means no recording — never a blocked interview.
-    await Recorder.start(this.s.cameraStream);
+    await Recorder.start(this.s.cameraStream, this.s.streamId);
 
     // Request fullscreen mode
     await this._requestFullscreen();
@@ -1154,6 +1179,15 @@ const App = {
     const recordingId = await Recorder.stop().catch(() => null);
     this._releaseCameraStream();
     VoiceManager.releaseMic(); // the STT capture stream, separate from the recorder's
+
+    // End the HR live stream
+    if (this.s.streamId) {
+      fetch('/api/stream/end', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streamId: this.s.streamId })
+      }).catch(e => console.warn('[Stream] Failed to end stream:', e));
+    }
 
     try {
       const res = await fetch('/api/report', {

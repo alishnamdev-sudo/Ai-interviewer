@@ -1166,6 +1166,80 @@ function attachSttStreamRelay(server) {
   });
 }
 
+// ─── Live Interview Streaming (HR Dashboard) ─────────────────────────────────
+// Real-time video streaming from candidate's interview to HR viewers via WebSocket.
+// Active streams: streamId -> { viewers: Set<ws>, candidateName, subject, startTime }
+const liveStreams = new Map();
+
+// Initiate a new live stream session (called when interview starts)
+app.post('/api/stream/start', (req, res) => {
+  const { recordingId, candidateName, subject } = req.body;
+  const streamId = crypto.randomUUID();
+  liveStreams.set(streamId, {
+    recordingId,
+    candidateName,
+    subject,
+    viewers: new Set(),
+    startTime: Date.now()
+  });
+  res.json({ streamId });
+});
+
+// Receive and broadcast stream chunk to all HR viewers
+app.post('/api/stream/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
+  const streamId = String(req.query.id || '');
+  const stream = liveStreams.get(streamId);
+
+  if (!stream) {
+    return res.status(404).json({ error: 'Stream not found' });
+  }
+
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: 'Empty chunk' });
+  }
+
+  // Broadcast to all connected HR viewers
+  // Send as binary: 4-byte size prefix + chunk data
+  const sizeBuffer = Buffer.alloc(4);
+  sizeBuffer.writeUInt32BE(req.body.length, 0);
+  const chunkMessage = Buffer.concat([sizeBuffer, req.body]);
+
+  const viewers = Array.from(stream.viewers);
+  const deadViewers = [];
+
+  viewers.forEach(ws => {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(chunkMessage);
+    } else {
+      deadViewers.push(ws);
+    }
+  });
+
+  // Clean up dead connections
+  deadViewers.forEach(ws => stream.viewers.delete(ws));
+
+  res.json({ success: true, viewerCount: stream.viewers.size });
+});
+
+// End a live stream session (called when interview ends)
+app.post('/api/stream/end', (req, res) => {
+  const { streamId } = req.body;
+  if (liveStreams.has(streamId)) {
+    const stream = liveStreams.get(streamId);
+    // Close all connected viewers
+    stream.viewers.forEach(ws => {
+      try { ws.close(1000, 'Interview ended'); } catch (_) {}
+    });
+    liveStreams.delete(streamId);
+  }
+  res.json({ success: true });
+});
+
+// HR live-watch page
+app.get('/hr-watch/:streamId', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'hr-watch.html'));
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 const httpServer = app.listen(PORT, () => {
   console.log('\n🎙️  V-Select — AI-Powered Talent Assessment & Selection Engine');
@@ -1176,3 +1250,43 @@ const httpServer = app.listen(PORT, () => {
   console.log('📋  Press Ctrl+C to stop\n');
 });
 attachSttStreamRelay(httpServer);
+
+// ─── WebSocket: Live Interview Stream (HR viewers) ────────────────────────────
+function attachLiveStreamRelay(httpServer) {
+  const liveStreamWss = new WebSocketServer({ server: httpServer, path: '/api/stream/watch' });
+  liveStreamWss.on('connection', (ws, req) => {
+    const q = new URL(req.url, 'http://localhost').searchParams;
+    const streamId = q.get('id');
+
+    if (!streamId || !liveStreams.has(streamId)) {
+      ws.close(1008, 'Invalid or expired stream');
+      return;
+    }
+
+    const stream = liveStreams.get(streamId);
+    stream.viewers.add(ws);
+
+    // Send stream metadata to the viewer (as text, not binary)
+    ws.send(JSON.stringify({
+      type: 'metadata',
+      candidateName: stream.candidateName,
+      subject: stream.subject,
+      startTime: stream.startTime
+    }), { binary: false });
+
+    ws.on('close', () => {
+      stream.viewers.delete(ws);
+      // Clean up empty streams
+      if (stream.viewers.size === 0 && Date.now() - stream.startTime > 60000) {
+        // Keep stream for 1 minute after last viewer disconnects, in case they reconnect
+        setTimeout(() => {
+          if (stream.viewers.size === 0) {
+            liveStreams.delete(streamId);
+          }
+        }, 60000);
+      }
+    });
+  });
+}
+
+attachLiveStreamRelay(httpServer);
