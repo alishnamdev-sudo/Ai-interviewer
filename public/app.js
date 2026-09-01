@@ -295,8 +295,18 @@ const App = {
       this.showToast('No Indian-English voice detected — try Microsoft Edge for authentic pronunciation.', 'info');
     }
     Whiteboard.init('wb-canvas', 'wb-canvas-wrap');
-    this._startCameraCapture();
     this._setupUnloadHandler(); // Setup cleanup for stream when page closes
+
+    // CRITICAL: Request fullscreen FIRST on mobile
+    // This prevents permission dialog from being blocked by page UI
+    try {
+      await this._requestFullscreen();
+    } catch (e) {
+      console.warn('Fullscreen request failed (non-critical):', e);
+    }
+
+    // NOW request camera — permission dialog appears in fullscreen
+    this._startCameraCapture();
 
     // Initiate live stream for HR monitoring (fire-and-forget, no await)
     try {
@@ -327,9 +337,6 @@ const App = {
     // Interview" click's permission context. Best-effort: a denied mic or
     // unsupported browser just means no recording — never a blocked interview.
     await Recorder.start(this.s.cameraStream, this.s.streamId);
-
-    // Request fullscreen mode
-    await this._requestFullscreen();
 
     // Set up fullscreen and tab-switching monitoring
     this._setupFullscreenMonitoring();
