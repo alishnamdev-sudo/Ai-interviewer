@@ -1020,6 +1020,8 @@ app.post('/api/report', async (req, res) => {
   try {
     const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null } = req.body;
 
+    console.log(`[/api/report] Received report: name=${teacherName}, subject=${subject}, interrupted=${interrupted}, stageIndex=${stageIndex}`);
+
     // Only attach a recording that actually exists on disk — a made-up id in
     // the request must not become a broken (or probing) link in the report.
     const recordingFile = (typeof recordingId === 'string' && RECORDING_ID_RE.test(recordingId))
@@ -1137,6 +1139,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.stageIndex = stageIndex;
 
     const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted });
+    console.log(`[/api/report] Saved report ${submissionId} for ${teacherName} (interrupted=${interrupted})`);
 
     // The report itself is never sent back to the candidate's browser — it's
     // only retrievable later through the password-protected /admin dashboard.

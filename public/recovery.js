@@ -147,7 +147,8 @@ window.addEventListener('pagehide', (e) => {
         stageIndex: App.s.stageIndex,
         interruptedAt: new Date().toISOString()
       };
-      navigator.sendBeacon('/api/report', JSON.stringify(data));
+      const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+      navigator.sendBeacon('/api/report', blob);
       console.log('[RecoveryManager] Partial report sent via beacon on pagehide');
     }
   } catch (e) {

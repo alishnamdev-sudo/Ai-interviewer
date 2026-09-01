@@ -179,7 +179,8 @@ const App = {
           interruptedAt: this.s.stageIndex
         };
         if (navigator.sendBeacon) {
-          navigator.sendBeacon('/api/report', JSON.stringify(reportData));
+          const blob = new Blob([JSON.stringify(reportData)], { type: 'application/json' });
+          navigator.sendBeacon('/api/report', blob);
         }
       }
 
@@ -187,7 +188,8 @@ const App = {
       if (this.s.streamId && !this.s.quitting) {
         const streamEndPayload = JSON.stringify({ streamId: this.s.streamId });
         if (navigator.sendBeacon) {
-          navigator.sendBeacon('/api/stream/end', streamEndPayload);
+          const blob = new Blob([streamEndPayload], { type: 'application/json' });
+          navigator.sendBeacon('/api/stream/end', blob);
         }
       }
     });
@@ -1249,7 +1251,8 @@ const App = {
 
       // Use sendBeacon for critical reliability (survives page unload)
       const payload = JSON.stringify(reportData);
-      const success = navigator.sendBeacon('/api/report', payload);
+      const blob = new Blob([payload], { type: 'application/json' });
+      const success = navigator.sendBeacon('/api/report', blob);
 
       if (!success) {
         // Fallback to fetch if sendBeacon not available

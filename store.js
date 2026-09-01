@@ -27,7 +27,7 @@ if (!process.env.PERSISTENT_DATA_DIR) {
 
 const ID_RE = /^[0-9a-f-]+$/i;
 
-function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null }) {
+function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false }) {
   const id = crypto.randomUUID();
   const record = {
     id,
@@ -40,9 +40,11 @@ function saveReport({ teacherName, subject, problemScore, transcript, report, re
     recordingId, // data/recordings/<recordingId>.<recordingExt>, or null if none was captured
     // 'webm' on most browsers, 'mp4' when recorded on iOS Safari (no webm
     // MediaRecorder support there) — null alongside a null recordingId.
-    recordingExt
+    recordingExt,
+    interrupted // true if interview was interrupted/incomplete
   };
   fs.writeFileSync(path.join(DATA_DIR, `${id}.json`), JSON.stringify(record, null, 2));
+  console.log(`[store] Saved report ${id} for ${teacherName} ${interrupted ? '(INTERRUPTED)' : ''}`);
   return id;
 }
 
@@ -58,7 +60,9 @@ function listReports() {
         subject: record.subject,
         overallScore: record.report?.overallScore ?? null,
         recommendation: record.report?.recommendation ?? null,
-        conductFlagged: record.report?.conductFlagged ?? false
+        conductFlagged: record.report?.conductFlagged ?? false,
+        interrupted: record.interrupted ?? false,
+        interruptedAt: record.interruptedAt ?? undefined
       };
     })
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
