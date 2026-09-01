@@ -133,11 +133,18 @@ const Admin = {
       const rec = r.recommendation || '—';
       const recStyle = getRecommendationStyle(rec);
       const date = new Date(r.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+      const interruptedBadge = r.interrupted ? '<span class="interrupted-badge" title="Interview was interrupted (refresh, network, or exit)">⏸️ Incomplete</span>' : '';
+      const stageLabel = r.interrupted && r.interruptedAt !== undefined ? {0: 'Wellbeing', 1: 'Resume Q&A', 2: 'Problem Solving', 3: 'Wrap-up'}[r.interruptedAt] || 'Unknown' : '';
+      const stageText = r.interrupted && stageLabel ? ` (stopped at: ${stageLabel})` : '';
       return `
-        <tr data-id="${escapeHtml(r.id)}">
-          <td class="clickable-cell">${escapeHtml(r.teacherName)} ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}</td>
+        <tr data-id="${escapeHtml(r.id)}" style="${r.interrupted ? 'opacity: 0.85; background-color: rgba(250,204,21,0.05);' : ''}">
+          <td class="clickable-cell">
+            ${escapeHtml(r.teacherName)}
+            ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}
+            ${interruptedBadge}
+          </td>
           <td class="clickable-cell">${escapeHtml(r.subject)}</td>
-          <td class="clickable-cell">${date}</td>
+          <td class="clickable-cell"><small>${date}${stageText}</small></td>
           <td class="clickable-cell" style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore ?? '—'}</td>
           <td class="clickable-cell"><span class="rec-badge" style="background:${recStyle.bg};border-color:${recStyle.border};color:${recStyle.color}">${escapeHtml(rec)}</span></td>
           <td class="action-cell" onclick="event.stopPropagation()"><button class="btn-delete" data-id="${escapeHtml(r.id)}" title="Delete this report">🗑️ Delete</button></td>
