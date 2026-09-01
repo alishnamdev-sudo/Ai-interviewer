@@ -162,9 +162,28 @@ const App = {
 
   get stage() { return STAGES[this.s.stageIndex]; },
 
-  // Cleanup on page unload - end stream even if user closes tab/navigates away
+  // Cleanup on page unload - save report and end stream even if user closes tab/navigates away
   _setupUnloadHandler() {
     window.addEventListener('beforeunload', () => {
+      // Save partial report if interview was in progress
+      if (this.s.teacherName && !this.s.quitting && this.s.stageIndex > 0) {
+        const reportData = {
+          transcript: ReportManager.getPlainTranscript(),
+          teacherName: this.s.teacherName,
+          subject: this.s.subject,
+          problemScore: this.s.problemScore,
+          misconductCount: this.s.misconductCount,
+          endedForMisconduct: this.s.endedForMisconduct,
+          recordingId: null,
+          interrupted: true,
+          interruptedAt: this.s.stageIndex
+        };
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/report', JSON.stringify(reportData));
+        }
+      }
+
+      // End stream
       if (this.s.streamId && !this.s.quitting) {
         const streamEndPayload = JSON.stringify({ streamId: this.s.streamId });
         if (navigator.sendBeacon) {
@@ -1179,12 +1198,12 @@ const App = {
   // The evaluation report is generated and stored on the server only — it is
   // never sent back to or rendered in the candidate's browser. The candidate
   // just sees a thank-you screen; results are reviewed later via /admin.
-  async generateReport() {
+  async generateReport(interrupted = false) {
     // Stop checkpointing and clear recovery data on normal completion
     RecoveryManager.stopCheckpointing();
 
     this._stopCameraCapture();
-    this.showScreen('loading');
+    if (!interrupted) this.showScreen('loading');
 
     // Stop the recording and wait for its final chunk to reach the server
     // BEFORE releasing the camera stream (stopping the tracks would cut the
@@ -1209,28 +1228,42 @@ const App = {
     }
 
     try {
-      const res = await fetch('/api/report', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          transcript:      ReportManager.getPlainTranscript(),
-          teacherName:     this.s.teacherName,
-          subject:         this.s.subject,
-          problemScore:    this.s.problemScore,
-          misconductCount: this.s.misconductCount,
-          endedForMisconduct: this.s.endedForMisconduct,
-          recordingId // links the report to data/recordings/<id>.webm (or null)
-        })
-      });
-      if (!res.ok) throw new Error('Server error ' + res.status);
+      const reportData = {
+        transcript:      ReportManager.getPlainTranscript(),
+        teacherName:     this.s.teacherName,
+        subject:         this.s.subject,
+        problemScore:    this.s.problemScore,
+        misconductCount: this.s.misconductCount,
+        endedForMisconduct: this.s.endedForMisconduct,
+        recordingId, // links the report to data/recordings/<id>.webm (or null)
+        interrupted: interrupted ? true : false,
+        interruptedAt: interrupted ? this.s.stageIndex : null
+      };
+
+      // Use sendBeacon for critical reliability (survives page unload)
+      const payload = JSON.stringify(reportData);
+      const success = navigator.sendBeacon('/api/report', payload);
+
+      if (!success) {
+        // Fallback to fetch if sendBeacon not available
+        const res = await fetch('/api/report', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        });
+        if (!res.ok) throw new Error('Server error ' + res.status);
+      }
 
       // Clear recovery data on successful submission
       RecoveryManager.clearCheckpoint();
-      this.showScreen('report');
+      if (!interrupted) this.showScreen('report');
     } catch (e) {
-      this.showScreen('report');
-      document.getElementById('report-container').innerHTML =
-        `<p class="error-msg">⚠️ Something went wrong submitting your interview. Please let the recruitment team know.</p>`;
+      console.error('[Report] Failed to submit:', e);
+      if (!interrupted) {
+        this.showScreen('report');
+        document.getElementById('report-container').innerHTML =
+          `<p class="error-msg">⚠️ Something went wrong submitting your interview. Please let the recruitment team know.</p>`;
+      }
     }
   },
 
