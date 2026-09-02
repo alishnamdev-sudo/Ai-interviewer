@@ -33,6 +33,23 @@ const STAGE_OPENERS = {
   WELLBEING: (name) => `Hi ${name}, welcome to your interview with Vedantu! Before we get started, how are you feeling today?`,
 };
 
+// Spoken in place of an AI reply when the chat model is unreachable even after
+// the server- and client-side retries (see App._recoverTurn) — natural,
+// interviewer-style questions so the candidate never sees an error. General
+// enough to fit any teacher, and never repeated within one interview.
+const FALLBACK_QUESTIONS = [
+  (s) => `Thank you for sharing that. Could you walk me through how you plan a typical ${s} lesson, from preparation to how you check that students have understood?`,
+  (s) => `That's helpful. Tell me about a time a student was really struggling with a ${s} concept — how did you help them get past it?`,
+  (s) => `Could you describe how you handle a class where students are at very different levels in ${s}?`,
+  (s) => `How do you keep students engaged during a live class, especially when their attention starts to drift?`,
+  (s) => `What do you do when a student asks a ${s} question you don't immediately know the answer to?`,
+  (s) => `How do you use tests or assessments to adjust the way you teach ${s}?`
+];
+// After this many consecutive fallbacks in RESUME_QA, move on to problem
+// solving (which doesn't depend on the chat model) rather than keep asking
+// canned questions while the model is down.
+const MAX_FALLBACK_STREAK = 3;
+
 const SUBMIT_BTN_MARKUP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg> Submit Solution';
 
 // ─── Whiteboard Timer ─────────────────────────────────────────────────────────
@@ -143,6 +160,8 @@ const App = {
     lastRecognizedText: '',
     consecutiveSilences: 0,
     misconductCount: 0,       // number of conduct warnings issued so far this interview
+    fallbacksUsed:   [],      // indexes into FALLBACK_QUESTIONS already spoken (see _recoverTurn)
+    fallbackStreak:  0,       // consecutive AI turns that needed a fallback; reset by any successful reply
     endedForMisconduct: false, // true only if the interview was actually terminated for conduct —
                                 // a candidate who was warned but behaved afterward is NOT flagged
     quitting:      false,
@@ -207,6 +226,40 @@ const App = {
   // the resume) is the full name, kept as-is for the transcript/report.
   _firstName() {
     return (this.s.teacherName || '').trim().split(/\s+/)[0] || 'there';
+  },
+
+  // ── Resilient fetch ────────────────────────────────────────────────────────
+  // Every interview-critical API call goes through here: each attempt has a
+  // hard timeout (a hung request must not freeze the interview) and transient
+  // failures — network drops on mobile, 5xx/429 from the server, a cold-started
+  // host — are retried with backoff before the caller ever sees an error.
+  // Returns the parsed JSON body.
+  async _fetchJSON(url, options = {}, { attempts = 3, timeoutMs = 30000 } = {}) {
+    const delays = [700, 1800];
+    let lastErr;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { ...options, signal: ctrl.signal });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          const e = new Error(body.details || body.error || `Server error ${res.status}`);
+          // A genuine client error won't change on retry; 5xx/429 might.
+          e.permanent = res.status < 500 && res.status !== 429;
+          throw e;
+        }
+        return await res.json();
+      } catch (e) {
+        lastErr = e;
+        if (e.permanent || this.s.quitting || attempt >= attempts) break;
+        console.warn(`[fetch] ${url} attempt ${attempt}/${attempts} failed (${e.name === 'AbortError' ? 'timeout' : e.message}) — retrying`);
+        await new Promise(r => setTimeout(r, delays[attempt - 1] || 2000));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastErr;
   },
 
   // ── Setup ──────────────────────────────────────────────────────────────────
@@ -416,9 +469,11 @@ const App = {
       // width/height likewise as 'ideal' — phone front cameras are natively
       // widescreen and forcing 320×240 (4:3) would crop/zoom the picture
       // farther than a plain "prefer roughly this size" request.
+      // Request BOTH camera and microphone upfront to trigger a unified 
+      // permission prompt (crucial for iOS Safari reliability).
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'user' }, width: { ideal: 320 }, height: { ideal: 240 } },
-        audio: false
+        audio: { echoCancellation: true, noiseSuppression: true }
       });
       this.s.cameraStream  = stream;
       this.s.cameraEnabled = true;
@@ -512,7 +567,7 @@ const App = {
   },
 
   async _handleResumeFile(file) {
-    const DEFAULT_HINT = 'PDF, PNG, JPG or TXT — max 8MB';
+    const DEFAULT_HINT = 'PDF, PNG, JPG, TXT or Word — max 8MB';
     const statusEl = document.getElementById('resume-status');
     const nameEl   = document.getElementById('resume-filename');
     const cardEl   = document.getElementById('resume-summary-card');
@@ -537,12 +592,12 @@ const App = {
       return;
     }
 
-    const extMimeMap = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', txt: 'text/plain' };
+    const extMimeMap = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', txt: 'text/plain', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const mimeType = extMimeMap[ext] || file.type;
     if (!mimeType || !Object.values(extMimeMap).includes(mimeType)) {
       statusEl.className = 'field-hint resume-status error';
-      statusEl.textContent = 'Unsupported file type. Please upload a PDF, PNG, JPG, or TXT resume.';
+      statusEl.textContent = 'Unsupported file type. Please upload a PDF, PNG, JPG, TXT, or Word resume.';
       if (fileInput) fileInput.value = '';
       return;
     }
@@ -636,7 +691,7 @@ const App = {
           if (this.s.quitting) return;
           if (resp.stageComplete) { this.advanceStage(); } else { this.startListening(); }
         });
-      } catch (e) { if (!this.s.quitting) this.handleErr(e); }
+      } catch (e) { this._recoverTurn(e); }
       return;
     }
 
@@ -713,20 +768,25 @@ const App = {
         else { this.startListening(); }
       });
     } catch (e) {
-      this.s.isProcessing = false;
-      if (!this.s.quitting) this.handleErr(e);
+      this._recoverTurn(e, text);
     }
   },
 
   // ── Conduct Monitoring ─────────────────────────────────────────────────────
+  // Fails open: conduct screening is a best-effort safeguard, so if the check
+  // itself is unavailable the answer is treated as clean rather than letting
+  // it interrupt the interview.
   async _checkConduct(text) {
-    const res = await fetch('/api/check-conduct', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userMessage: text, teacherName: this.s.teacherName, misconductCount: this.s.misconductCount })
-    });
-    if (!res.ok) throw new Error('Conduct check failed');
-    return res.json();
+    try {
+      return await this._fetchJSON('/api/check-conduct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userMessage: text, teacherName: this.s.teacherName, misconductCount: this.s.misconductCount })
+      });
+    } catch (e) {
+      console.warn('[conduct] check unavailable, treating answer as clean:', e.message);
+      return { flagged: false, text: null, misconductWarning: false, misconductEnd: false };
+    }
   },
 
   // Returns true if the turn was consumed by a conduct warning or interview-
@@ -783,24 +843,22 @@ const App = {
       misconductCount: this.s.misconductCount
     };
 
-    // Add user turn to local history
-    this.s.history.push({ role: 'user', parts: [{ text: userMessage }] });
-
-    const res = await fetch('/api/chat', {
+    const data = await this._fetchJSON('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    });
+    }, { attempts: 3, timeoutMs: 35000 });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.details || 'Server error ' + res.status);
+    if (!data || typeof data.text !== 'string' || !data.text.trim()) {
+      throw new Error('empty AI reply');
     }
 
-    const data = await res.json();
-
-    // Add model turn to local history
+    // Commit the turn to local history only once the reply is in hand — a
+    // failed call must not leave a dangling user turn that would break the
+    // alternating user/model history sent with every later request.
+    this.s.history.push({ role: 'user',  parts: [{ text: userMessage }] });
     this.s.history.push({ role: 'model', parts: [{ text: data.text }] });
+    this.s.fallbackStreak = 0;
 
     return data; // { text, stageComplete, misconductWarning, misconductEnd }
   },
@@ -1030,7 +1088,13 @@ const App = {
     btn.innerHTML = '<span class="spinner"></span> Evaluating…';
 
     try {
-      const res = await fetch('/api/evaluate', {
+      // The server already returns a graceful fallback verdict when the model
+      // fails, so reaching the catch below means the request itself couldn't
+      // get through even after retries — record the round neutrally rather
+      // than penalising the candidate for a network problem.
+      let ev;
+      try {
+        ev = await this._fetchJSON('/api/evaluate', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
@@ -1046,8 +1110,17 @@ const App = {
           // approach (method, setup, steps, units), not just the final answer.
           requiresWork: !!this.s.currentQuestion.requiresWork
         })
-      });
-      const ev = await res.json();
+        }, { attempts: 3, timeoutMs: 45000 });
+      } catch (e) {
+        console.warn('[evaluate] unavailable after retries:', e.message);
+        ev = {
+          isCorrect: true, // benefit of the doubt — never extend the wrong-answer streak over a connection problem
+          score: 5,
+          evaluation: 'Automatic evaluation was unavailable (connection problem) — the solution was recorded but could not be graded; please review it from the recording/whiteboard.',
+          feedback: '',
+          followUpQuestion: null
+        };
+      }
       if (this.s.quitting) return; // candidate quit while evaluation was in flight
       this.s.problemScores.push(ev.score ?? 5);
       // Kept as a single number for backward compatibility with the report

@@ -49,6 +49,47 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// ─── Gemini resilience ────────────────────────────────────────────────────────
+// Transient Gemini failures (429 rate limits, 500/503 "model is overloaded",
+// dropped connections, hung requests) are common enough during a live
+// interview that a single failed call must never reach the candidate. Every
+// model call goes through withGeminiRetry(): each attempt is capped so a hung
+// request can't stall the interview, and failures are retried with backoff.
+// Only genuine client errors (4xx other than 429) are not retried.
+const GEMINI_ATTEMPTS = 3;
+const GEMINI_ATTEMPT_TIMEOUT_MS = 25000;
+const GEMINI_RETRY_DELAYS_MS = [800, 2000];
+
+function isRetryableGeminiError(err) {
+  const status = err && (err.status || err.statusCode);
+  if (typeof status === 'number' && status >= 400 && status < 500 && status !== 429) return false;
+  return true;
+}
+
+async function withGeminiRetry(label, fn) {
+  let lastErr;
+  for (let attempt = 1; attempt <= GEMINI_ATTEMPTS; attempt++) {
+    let timer;
+    try {
+      return await Promise.race([
+        fn(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`timed out after ${GEMINI_ATTEMPT_TIMEOUT_MS}ms`)), GEMINI_ATTEMPT_TIMEOUT_MS);
+        })
+      ]);
+    } catch (err) {
+      lastErr = err;
+      const retryable = isRetryableGeminiError(err) && attempt < GEMINI_ATTEMPTS;
+      console.warn(`[${label}] attempt ${attempt}/${GEMINI_ATTEMPTS} failed: ${err.message}${retryable ? ' — retrying' : ''}`);
+      if (!retryable) break;
+      await new Promise(r => setTimeout(r, GEMINI_RETRY_DELAYS_MS[attempt - 1] || 2000));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastErr;
+}
+
 // ─── Sarvam AI Voice (STT + TTS) ──────────────────────────────────────────────
 // Optional cloud voice stack: Saarika (speech-to-text) + Bulbul (text-to-speech)
 // via api.sarvam.ai, proxied through these routes so the API key never reaches
@@ -504,7 +545,7 @@ CANDIDATE MESSAGE: "${userMessage}"
 
 Respond with ONLY one word, exactly: YES or NO.`;
 
-  const result = await model.generateContent(prompt);
+  const result = await withGeminiRetry('conduct-check', () => model.generateContent(prompt));
   return result.response.text().trim().toUpperCase().startsWith('YES');
 }
 
@@ -515,7 +556,15 @@ Respond with ONLY one word, exactly: YES or NO.`;
 const MAX_CONDUCT_WARNINGS = 2;
 
 async function checkConduct(userMessage, teacherName, misconductCount) {
-  const flagged = await detectMisconduct(userMessage);
+  // Fail open: conduct screening is a best-effort safeguard, so if the
+  // classifier itself is unavailable the answer is treated as clean rather
+  // than failing the whole turn and interrupting the candidate.
+  let flagged = false;
+  try {
+    flagged = await detectMisconduct(userMessage);
+  } catch (err) {
+    console.warn('[conduct-check] unavailable, treating message as clean:', err.message);
+  }
   if (!flagged) return { flagged: false, text: null, misconductWarning: false, misconductEnd: false };
 
   const firstName = firstNameOf(teacherName);
@@ -580,8 +629,12 @@ app.post('/api/chat', async (req, res) => {
       generationConfig: { temperature: 0.75, maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } }
     });
 
-    const chat = model.startChat({ history });
-    const result = await chat.sendMessage(userMessage);
+    const result = await withGeminiRetry('chat', () => {
+      // A fresh chat session per attempt — a failed attempt must not leave a
+      // half-appended turn in the SDK's internal history for the retry.
+      const chat = model.startChat({ history });
+      return chat.sendMessage(userMessage);
+    });
     const fullText = result.response.text().trim();
 
     const stageComplete = fullText.includes('[STAGE_COMPLETE]');
@@ -606,6 +659,13 @@ app.post('/api/chat', async (req, res) => {
       if (firstParagraph && firstParagraph.trim() !== text) {
         text = firstParagraph.trim();
       }
+    }
+
+    // A reply that was nothing but the stage tag (or an empty completion)
+    // would render as a blank bubble and speak nothing — give the candidate
+    // a natural line instead of dead air.
+    if (!text) {
+      text = stageComplete ? 'Thank you for sharing that.' : 'Thank you. Could you tell me a little more about that?';
     }
 
     res.json({ text, stageComplete, misconductWarning: false, misconductEnd: false });
@@ -651,7 +711,7 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
     const data = fileBase64.replace(/^data:[\w/+-]+;base64,/, '');
     const parts = [{ text: promptText }, { inlineData: { mimeType, data } }];
 
-    const result = await model.generateContent(parts);
+    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
     let raw = result.response.text().trim();
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
@@ -957,7 +1017,7 @@ ${jsonShape}`;
       parts.push({ inlineData: { mimeType: 'image/png', data } });
     }
 
-    const result = await model.generateContent(parts);
+    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
     let raw = result.response.text().trim();
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
@@ -1005,7 +1065,7 @@ Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
     const data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const parts = [{ text: promptText }, { inlineData: { mimeType: 'image/jpeg', data } }];
 
-    const result = await model.generateContent(parts);
+    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
     const notes = result.response.text().trim();
 
     res.json({ success: true, notes });
@@ -1108,7 +1168,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     // candidates most likely to need one flagged.
     let reportData;
     try {
-      const result = await model.generateContent(prompt);
+      const result = await withGeminiRetry('gemini', () => model.generateContent(prompt));
       let raw = result.response.text().trim();
       raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       reportData = JSON.parse(raw);
@@ -1160,14 +1220,17 @@ Respond ONLY in this exact JSON format (no markdown fences):
 const SARVAM_STREAM_STT_MODEL = process.env.SARVAM_STREAM_STT_MODEL || 'saaras:v3';
 
 function attachSttStreamRelay(server) {
-  const wss = new WebSocketServer({ server, path: '/api/stt-stream' });
+  const wss = new WebSocketServer({ server, path: '/api/stt-stream', perMessageDeflate: false });
   wss.on('connection', (client, req) => {
     if (!SARVAM_API_KEY) {
+      console.log('[stt-stream] Sarvam API key not configured, closing connection');
       client.close(1011, 'Sarvam STT not configured');
       return;
     }
     const q = new URL(req.url, 'http://localhost').searchParams;
     const lang = SARVAM_STT_LANGS.has(q.get('lang')) ? q.get('lang') : 'unknown';
+
+    console.log(`[stt-stream] New connection: lang=${lang}`);
 
     const upstream = new SarvamWs(
       `wss://api.sarvam.ai/speech-to-text/ws?language-code=${lang}&model=${encodeURIComponent(SARVAM_STREAM_STT_MODEL)}`
@@ -1178,27 +1241,71 @@ function attachSttStreamRelay(server) {
     // Audio arriving before the upstream socket opens is queued, not dropped.
     const queue = [];
     upstream.on('open', () => {
-      for (const m of queue) upstream.send(m);
+      console.log('[stt-stream] Upstream Sarvam connection opened successfully');
+      for (const msg of queue) {
+        try {
+          upstream.send(msg.data, { binary: msg.isBinary });
+        } catch (e) {
+          console.error('[stt-stream] Error sending queued message:', e.message);
+        }
+      }
       queue.length = 0;
     });
-    client.on('message', data => {
-      const msg = data.toString();
-      if (upstream.readyState === SarvamWs.OPEN) upstream.send(msg);
-      else if (upstream.readyState === SarvamWs.CONNECTING) queue.push(msg);
+
+    client.on('message', (data, isBinary) => {
+      try {
+        // Forward audio frames to Sarvam (keep binary format)
+        if (upstream.readyState === SarvamWs.OPEN) {
+          upstream.send(data, { binary: isBinary }, err => {
+            if (err) console.error('[stt-stream] Error sending to Sarvam:', err.message);
+          });
+        } else if (upstream.readyState === SarvamWs.CONNECTING) {
+          queue.push({ data, isBinary });
+        }
+      } catch (e) {
+        console.error('[stt-stream] Error forwarding to Sarvam:', e.message);
+      }
     });
-    upstream.on('message', data => {
-      if (client.readyState === client.OPEN) client.send(data.toString());
+
+    upstream.on('message', (data, isBinary) => {
+      try {
+        if (client.readyState === client.OPEN) {
+          // Relay Sarvam responses back to client (preserve binary flag)
+          client.send(data, { binary: isBinary }, err => {
+            if (err) console.error('[stt-stream] Error sending to client:', err.message);
+          });
+        }
+      } catch (e) {
+        console.error('[stt-stream] Error relaying from Sarvam:', e.message);
+      }
     });
 
     const closeBoth = () => {
       try { client.close(); } catch (_) {}
       try { upstream.close(); } catch (_) {}
     };
-    client.on('close', closeBoth);
-    client.on('error', closeBoth);
-    upstream.on('close', closeBoth);
+
+    client.on('close', () => {
+      console.log('[stt-stream] Client disconnected');
+      closeBoth();
+    });
+
+    client.on('error', (err) => {
+      console.error('[stt-stream] Client error:', err.message);
+      closeBoth();
+    });
+
+    upstream.on('close', () => {
+      console.log('[stt-stream] Upstream disconnected');
+      closeBoth();
+    });
+
     upstream.on('error', err => {
-      console.error('[stt-stream] upstream error:', err.message);
+      console.error('[stt-stream] Upstream Sarvam error:', err.message);
+      console.error('[stt-stream] Error details:', err.code, err);
+      if (err.response) {
+        console.error('[stt-stream] Response status:', err.response.statusCode);
+      }
       closeBoth();
     });
   });
@@ -1309,17 +1416,32 @@ const httpServer = app.listen(PORT, () => {
   console.log(`🌐  http://localhost:${PORT}`);
   console.log('📋  Press Ctrl+C to stop\n');
 });
+
+// Handle WebSocket upgrade errors
+httpServer.on('upgrade', (req, socket, head) => {
+  console.log(`[HTTP] Upgrade request: ${req.url}`);
+  if (!req.url.includes('/api/stt-stream') && !req.url.includes('/api/stream/watch')) {
+    console.log(`[HTTP] Rejecting upgrade for non-WebSocket path: ${req.url}`);
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+  }
+});
+
 attachSttStreamRelay(httpServer);
 
 // ─── WebSocket: Live Interview Stream (HR viewers) ────────────────────────────
-const liveStreamWss = new WebSocketServer({ server: httpServer, path: '/api/stream/watch' });
+const liveStreamWss = new WebSocketServer({
+  server: httpServer,
+  path: '/api/stream/watch',
+  perMessageDeflate: false
+});
 
 liveStreamWss.on('connection', (ws, req) => {
   // Extract stream ID from query string
   const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
   const streamId = urlParams.get('id');
 
-  console.log(`[Stream] WebSocket connection attempt: streamId=${streamId}`);
+  console.log(`[Stream] WebSocket connection attempt: streamId=${streamId}, url=${req.url}`);
 
   if (!streamId || !liveStreams.has(streamId)) {
     console.log(`[Stream] Invalid stream ID: ${streamId}`);
@@ -1359,6 +1481,10 @@ liveStreamWss.on('connection', (ws, req) => {
     console.error(`[Stream] WebSocket error:`, err.message);
     stream.viewers.delete(ws);
   });
+});
+
+liveStreamWss.on('error', (err) => {
+  console.error('[Stream] WebSocket Server error:', err.message);
 });
 
 // Stream chunk buffer for each viewer (holds recent chunks for new connections)

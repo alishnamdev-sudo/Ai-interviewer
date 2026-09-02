@@ -53,7 +53,7 @@
         <input
           type="file"
           id="resume-input"
-          accept=".pdf,.png,.jpg,.jpeg,.txt"
+          accept=".pdf,.png,.jpg,.jpeg,.txt,.doc,.docx"
           onchange="App.onResumeSelected(event)"
           onclick="event.stopPropagation()"
           hidden
@@ -61,7 +61,7 @@
         <svg class="resume-upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3v5a1 1 0 0 0 1 1h5"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z"/><path d="M9 15h6M9 11h3"/></svg>
         <div class="resume-upload-copy">
           <span class="resume-upload-title">Drop your resume here, or <u>browse</u></span>
-          <span id="resume-filename" class="resume-filename">PDF, PNG, JPG or TXT — max 8MB</span>
+          <span id="resume-filename" class="resume-filename">PDF, PNG, JPG, TXT or Word — max 8MB</span>
         </div>
       </div>
       <p id="resume-status" class="field-hint resume-status"></p>

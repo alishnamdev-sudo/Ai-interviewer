@@ -38,7 +38,11 @@ const Recorder = {
     this.streamId = streamId;
 
     try {
-      this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (cameraStream.getAudioTracks().length > 0) {
+        this.audioStream = new MediaStream(cameraStream.getAudioTracks());
+      } else {
+        this.audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
     } catch (e) {
       console.warn('Recording disabled — microphone stream unavailable:', e);
       return false;

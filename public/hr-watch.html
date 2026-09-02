@@ -431,11 +431,19 @@
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url = `${protocol}//${window.location.host}/api/stream/watch?id=${streamId}`;
+      console.log(`[HR-Watch] Connecting to WebSocket: ${url}`);
 
-      ws = new WebSocket(url);
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        console.error('[HR-Watch] Failed to create WebSocket:', e);
+        showError('Failed to create WebSocket connection: ' + e.message);
+        updateStatus('Error', 'disconnected');
+        return;
+      }
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        console.log('[HR-Watch] WebSocket connected');
         isConnected = true;
         updateStatus('Live', 'live');
         showSuccess('Connected to interview stream');
@@ -450,6 +458,7 @@
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'metadata') {
+              console.log('[HR-Watch] Received metadata:', msg);
               candidateNameEl.textContent = msg.candidateName || '—';
               subjectEl.textContent = msg.subject || '—';
               startTimer();
@@ -458,7 +467,7 @@
               initAudioVisualizer();
             }
           } catch (e) {
-            console.error('Failed to parse message:', e);
+            console.error('[HR-Watch] Failed to parse message:', e);
           }
         } else if (event.data instanceof ArrayBuffer) {
           // Binary chunk: read 4-byte size prefix + chunk data
@@ -476,24 +485,28 @@
                 }
               }
             } catch (e) {
-              console.error('Failed to process chunk:', e);
+              console.error('[HR-Watch] Failed to process chunk:', e);
             }
           }
         }
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        showError('Stream connection error');
+        console.error('[HR-Watch] WebSocket error:', error);
+        showError('Stream connection error: ' + (error.message || 'Unknown error'));
         updateStatus('Error', 'disconnected');
         stopVisualizer();
       };
 
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
+      ws.onclose = (event) => {
+        console.log(`[HR-Watch] WebSocket disconnected: code=${event.code}, reason=${event.reason}`);
         isConnected = false;
         updateStatus('Disconnected', 'disconnected');
-        showError('Stream connection closed');
+        if (event.code === 1008) {
+          showError('Stream not found or invalid stream ID');
+        } else {
+          showError('Stream connection closed');
+        }
         stopVisualizer();
         // Try to reconnect after 3 seconds
         setTimeout(connectWebSocket, 3000);

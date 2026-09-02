@@ -793,7 +793,9 @@ const VoiceManager = (() => {
       // Real-time transcription over the server's Sarvam relay.
       try {
         const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-        c.ws = new WebSocket(`${proto}${location.host}/api/stt-stream?lang=${encodeURIComponent(recognitionLang)}`);
+        const sttUrl = `${proto}${location.host}/api/stt-stream?lang=${encodeURIComponent(recognitionLang)}`;
+        console.log(`[Voice] Connecting to Sarvam STT stream: ${sttUrl}`);
+        c.ws = new WebSocket(sttUrl);
         c.ws.onmessage = ev => {
           try {
             const msg = JSON.parse(ev.data);
@@ -812,18 +814,27 @@ const VoiceManager = (() => {
                 updateDisplay();
               }
             } else if (msg.type === 'error') {
-              console.warn('Sarvam stream error:', JSON.stringify(msg.data).slice(0, 200));
+              console.warn('[Voice] Sarvam stream error:', JSON.stringify(msg.data).slice(0, 200));
               c.wsFailed = true;
             }
-          } catch (_) {}
+          } catch (e) {
+            console.warn('[Voice] Failed to parse Sarvam message:', e.message);
+          }
         };
-        c.ws.onerror = () => { c.wsFailed = true; };
+        c.ws.onerror = (err) => {
+          console.warn('[Voice] Sarvam WebSocket error, will fallback to browser STT:', err);
+          c.wsFailed = true;
+        };
         c.ws.onclose = () => {
           // Closing while we're still capturing means the stream died early
           // and may have missed audio — the batch fallback covers the answer.
-          if (_isListening && cap === c) c.wsFailed = true;
+          if (_isListening && cap === c) {
+            console.log('[Voice] Sarvam stream closed, using browser fallback');
+            c.wsFailed = true;
+          }
         };
-      } catch (_) {
+      } catch (e) {
+        console.error('[Voice] Failed to create Sarvam WebSocket:', e);
         c.wsFailed = true;
       }
 
