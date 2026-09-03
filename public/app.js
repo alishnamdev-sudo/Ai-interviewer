@@ -149,6 +149,7 @@ const App = {
     problemRoundIndex: 0,     // index into problemQuestions of the round currently being solved
     problemScores: [],        // score (0-10) from each round, averaged into problemScore for the report
     problemCorrectCount: 0,   // count of isCorrect:true rounds so far; drives the accuracy checkpoint
+    problemUngradedCount: 0,  // rounds the evaluator couldn't score (connection problem) — excluded from the checkpoint
     consecutiveWrongProblemAnswers: 0, // resets on any correct round; see MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS
     awaitingProblemFollowUp: false, // true while listening for the answer to a problem-solving follow-up question
     problemScore:  0,
@@ -234,12 +235,20 @@ const App = {
   // failures — network drops on mobile, 5xx/429 from the server, a cold-started
   // host — are retried with backoff before the caller ever sees an error.
   // Returns the parsed JSON body.
-  async _fetchJSON(url, options = {}, { attempts = 3, timeoutMs = 30000 } = {}) {
+  // deadlineMs caps the TOTAL time across all attempts. Without it the
+  // per-attempt timeouts would stack — three 25s attempts is 75s of silence
+  // for a candidate mid-conversation. A fast failure (a dropped mobile
+  // connection) still leaves room to retry; a slow one simply gives up so the
+  // caller can recover in good time.
+  async _fetchJSON(url, options = {}, { attempts = 3, timeoutMs = 30000, deadlineMs = Infinity } = {}) {
     const delays = [700, 1800];
+    const startedAt = Date.now();
     let lastErr;
     for (let attempt = 1; attempt <= attempts; attempt++) {
+      const remaining = deadlineMs - (Date.now() - startedAt);
+      if (attempt > 1 && remaining <= 1000) break; // not enough budget left to be worth another try
       const ctrl  = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), Math.min(timeoutMs, Math.max(remaining, 1000)));
       try {
         const res = await fetch(url, { ...options, signal: ctrl.signal });
         if (!res.ok) {
@@ -772,6 +781,62 @@ const App = {
     }
   },
 
+  // ── Turn Recovery ──────────────────────────────────────────────────────────
+  // Last line of defence for a conversational turn: the chat model is still
+  // unreachable after the server's retries AND the client's retries. Rather
+  // than show the candidate an error, the interviewer asks a sensible
+  // general question and the interview carries on. The failure is recorded in
+  // the transcript for the admin only.
+  //
+  // candidateAnswer (when the failure followed a real answer) is pushed into
+  // history alongside the fallback question, so the alternating user/model
+  // sequence stays intact for the next successful call.
+  _recoverTurn(err, candidateAnswer = null) {
+    this.s.isProcessing = false;
+    this.clearSilenceTimer();
+    if (this.s.quitting) return;
+
+    console.warn('[recover] AI turn failed, using fallback:', err && err.message);
+    const label = STAGE_LABELS[this.stage];
+    this.addEntry(
+      'System (internal note — not shown to candidate)',
+      `AI reply unavailable after retries (${err && err.message}); interviewer continued with a fallback question.`,
+      label
+    );
+
+    this.s.fallbackStreak++;
+
+    // Persistent outage: stop asking canned questions and move to the next
+    // stage, which doesn't depend on the conversational model.
+    const nextUnused = FALLBACK_QUESTIONS.findIndex((_, i) => !this.s.fallbacksUsed.includes(i));
+    if (this.s.fallbackStreak > MAX_FALLBACK_STREAK || nextUnused === -1) {
+      this.addEntry(
+        'System (internal note — not shown to candidate)',
+        'Chat model unavailable for several consecutive turns — advanced to the next stage early.',
+        label
+      );
+      this.advanceStage().catch(err => this.handleErr(err));
+      return;
+    }
+
+    this.s.fallbacksUsed.push(nextUnused);
+    const question = FALLBACK_QUESTIONS[nextUnused](this.s.subject || 'your subject');
+
+    this.s.history.push({
+      role:  'user',
+      parts: [{ text: candidateAnswer || '(the candidate did not respond)' }]
+    });
+    this.s.history.push({ role: 'model', parts: [{ text: question }] });
+
+    this.renderAIMsg(question);
+    this.addEntry('AI Interviewer', question, label);
+    this.setStatus('speaking');
+    VoiceManager.speak(question, () => {
+      if (this.s.quitting) return;
+      this.startListening();
+    });
+  },
+
   // ── Conduct Monitoring ─────────────────────────────────────────────────────
   // Fails open: conduct screening is a best-effort safeguard, so if the check
   // itself is unavailable the answer is treated as clean rather than letting
@@ -782,7 +847,7 @@ const App = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userMessage: text, teacherName: this.s.teacherName, misconductCount: this.s.misconductCount })
-      });
+      }, { attempts: 2, timeoutMs: 9000, deadlineMs: 11000 });
     } catch (e) {
       console.warn('[conduct] check unavailable, treating answer as clean:', e.message);
       return { flagged: false, text: null, misconductWarning: false, misconductEnd: false };
@@ -847,7 +912,7 @@ const App = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
-    }, { attempts: 3, timeoutMs: 35000 });
+    }, { attempts: 3, timeoutMs: 25000, deadlineMs: 27000 });
 
     if (!data || typeof data.text !== 'string' || !data.text.trim()) {
       throw new Error('empty AI reply');
@@ -872,6 +937,7 @@ const App = {
     this.s.problemRoundIndex  = 0;
     this.s.problemScores      = [];
     this.s.problemCorrectCount = 0;
+    this.s.problemUngradedCount = 0;
     this.s.consecutiveWrongProblemAnswers = 0;
 
     const total = PROBLEM_SOLVE_QUESTION_COUNT;
@@ -900,9 +966,11 @@ const App = {
   // the request fails — starting the problem-solving stage must never be blocked.
   async _fetchProblemQuestions(subject, count, roundIndex = 0) {
     try {
-      const res = await fetch(`/api/problem-questions?subject=${encodeURIComponent(subject)}&count=${count}&roundIndex=${roundIndex}`);
-      if (!res.ok) throw new Error('bank returned ' + res.status);
-      const data = await res.json();
+      const data = await this._fetchJSON(
+        `/api/problem-questions?subject=${encodeURIComponent(subject)}&count=${count}&roundIndex=${roundIndex}`,
+        {},
+        { attempts: 2, timeoutMs: 12000 }
+      );
       if (!Array.isArray(data.questions) || !data.questions.length) throw new Error('empty bank response');
       return data.questions;
     } catch (e) {
@@ -917,7 +985,17 @@ const App = {
     // Fetch the next question based on the current round index (progressive difficulty)
     const questions = await this._fetchProblemQuestions(this.s.subject, 1, this.s.problemRoundIndex);
     if (!questions || questions.length === 0) {
+      // No question could be produced from any source (bank and built-in set
+      // both empty for this subject). Returning here would leave the candidate
+      // staring at a screen with nothing to do — conclude the stage gracefully
+      // instead of stalling.
       console.error('Failed to fetch question for round', this.s.problemRoundIndex);
+      this.addEntry(
+        'System (internal note — not shown to candidate)',
+        `No problem-solving question was available for round ${this.s.problemRoundIndex + 1} — problem solving ended here.`,
+        'Problem Solving'
+      );
+      await this._concludeProblemSolving();
       return;
     }
 
@@ -1093,30 +1171,32 @@ const App = {
       // get through even after retries — record the round neutrally rather
       // than penalising the candidate for a network problem.
       let ev;
+      let evalUnavailable = false;
       try {
         ev = await this._fetchJSON('/api/evaluate', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          question:    this.s.currentQuestion.question,
-          subject:     this.s.subject,
-          imageBase64: hasDrawing ? Whiteboard.exportPNG() : null,
-          dictatedText: dictatedText || null,
-          // Grounding truth for diagram-based questions — the evaluator never
-          // sees the diagram image itself, so this fills in what it needs to
-          // check correctness (e.g. what each labelled part actually is).
-          evalContext: this.s.currentQuestion.evalContext || null,
-          // Numericals/derivations: the evaluator grades the full step-by-step
-          // approach (method, setup, steps, units), not just the final answer.
-          requiresWork: !!this.s.currentQuestion.requiresWork
-        })
-        }, { attempts: 3, timeoutMs: 45000 });
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            question:    this.s.currentQuestion.question,
+            subject:     this.s.subject,
+            imageBase64: hasDrawing ? Whiteboard.exportPNG() : null,
+            dictatedText: dictatedText || null,
+            // Grounding truth for diagram-based questions — the evaluator never
+            // sees the diagram image itself, so this fills in what it needs to
+            // check correctness (e.g. what each labelled part actually is).
+            evalContext: this.s.currentQuestion.evalContext || null,
+            // Numericals/derivations: the evaluator grades the full step-by-step
+            // approach (method, setup, steps, units), not just the final answer.
+            requiresWork: !!this.s.currentQuestion.requiresWork
+          })
+        }, { attempts: 3, timeoutMs: 45000, deadlineMs: 70000 });
       } catch (e) {
         console.warn('[evaluate] unavailable after retries:', e.message);
+        evalUnavailable = true;
         ev = {
-          isCorrect: true, // benefit of the doubt — never extend the wrong-answer streak over a connection problem
-          score: 5,
-          evaluation: 'Automatic evaluation was unavailable (connection problem) — the solution was recorded but could not be graded; please review it from the recording/whiteboard.',
+          isCorrect: false,
+          score: 5, // neutral placeholder so the round average isn't skewed either way
+          evaluation: 'Automatic evaluation was unavailable (connection problem) — the solution was recorded but could not be graded automatically. Please review it from the recording and whiteboard.',
           feedback: '',
           followUpQuestion: null
         };
@@ -1129,8 +1209,14 @@ const App = {
 
       // A wrong round (including submitting nothing) extends the streak; any
       // correct round resets it and counts toward the accuracy checkpoint below.
-      if (ev.isCorrect) this.s.problemCorrectCount++;
-      this.s.consecutiveWrongProblemAnswers = ev.isCorrect ? 0 : this.s.consecutiveWrongProblemAnswers + 1;
+      // An ungraded round (evaluator unreachable) counts as neither — a
+      // connection problem must never push a candidate toward an early exit.
+      if (!evalUnavailable) {
+        if (ev.isCorrect) this.s.problemCorrectCount++;
+        this.s.consecutiveWrongProblemAnswers = ev.isCorrect ? 0 : this.s.consecutiveWrongProblemAnswers + 1;
+      } else {
+        this.s.problemUngradedCount++;
+      }
 
       // Two early-exit triggers, both producing the same effect (skip this
       // round's follow-up, go straight to the closing announcement instead of
@@ -1143,9 +1229,13 @@ const App = {
       if (this.s.consecutiveWrongProblemAnswers >= MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS) {
         endEarlyReason = `${MAX_CONSECUTIVE_WRONG_PROBLEM_ANSWERS} consecutive incorrect/insufficient answers`;
       } else if (this.s.problemScores.length === PROBLEM_SOLVE_CHECKPOINT_ROUND) {
-        const accuracy = this.s.problemCorrectCount / this.s.problemScores.length;
+        // Ungraded rounds (evaluator unreachable) are excluded from the
+        // denominator — a candidate must never be cut short because a network
+        // problem made some of their rounds impossible to score.
+        const graded = this.s.problemScores.length - this.s.problemUngradedCount;
+        const accuracy = graded > 0 ? this.s.problemCorrectCount / graded : 1;
         if (accuracy < PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY) {
-          const tally = `${this.s.problemCorrectCount}/${this.s.problemScores.length} correct`;
+          const tally = `${this.s.problemCorrectCount}/${graded} correct`;
           endEarlyReason = `below the ${Math.round(PROBLEM_SOLVE_CHECKPOINT_MIN_ACCURACY * 100)}% accuracy checkpoint at question ${PROBLEM_SOLVE_CHECKPOINT_ROUND} (${tally})`;
         }
       }
@@ -1191,9 +1281,24 @@ const App = {
       });
 
     } catch (e) {
+      // The evaluation call itself already has its own fallback above, so this
+      // only catches an unexpected local failure (e.g. exporting the canvas).
+      // Restore the button and keep the interview moving rather than stranding
+      // the candidate on the whiteboard screen.
+      console.error('[submitSolution] unexpected failure:', e);
       btn.disabled  = false;
       btn.innerHTML = SUBMIT_BTN_MARKUP;
-      if (!this.s.quitting) this.handleErr(e);
+      if (this.s.quitting) return;
+      this.addEntry('System (internal note — not shown to candidate)', `Solution submission failed unexpectedly: ${e.message}`, `Problem Solving (Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT})`);
+      this.showScreen('interview');
+      this.updateStageUI();
+      const ackText = 'Thank you for sharing your approach.';
+      this.renderAIMsg(ackText);
+      this.addEntry('AI Interviewer', ackText, `Problem Solving (Q${this.s.problemRoundIndex + 1}/${PROBLEM_SOLVE_QUESTION_COUNT})`);
+      this.setStatus('speaking');
+      VoiceManager.speak(ackText, () => {
+        if (!this.s.quitting) this._advanceProblemRound();
+      });
     }
   },
 
@@ -1238,8 +1343,11 @@ const App = {
       this.s.isProcessing = false;
       await this._advanceProblemRound();
     } catch (e) {
+      // The follow-up answer is already logged to the transcript above, so
+      // nothing is lost — just move on to the next round silently.
+      console.warn('[problem follow-up] failed, advancing round:', e.message);
       this.s.isProcessing = false;
-      if (!this.s.quitting) this.handleErr(e);
+      if (!this.s.quitting) await this._advanceProblemRound();
     }
   },
 
@@ -1328,13 +1436,14 @@ const App = {
       const success = navigator.sendBeacon('/api/report', blob);
 
       if (!success) {
-        // Fallback to fetch if sendBeacon not available
-        const res = await fetch('/api/report', {
+        // Fallback to a retrying fetch if sendBeacon is unavailable or refused
+        // the payload (it has a size cap) — the report is the whole point of
+        // the interview, so it gets several attempts before giving up.
+        await this._fetchJSON('/api/report', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
           body: payload
-        });
-        if (!res.ok) throw new Error('Server error ' + res.status);
+        }, { attempts: 4, timeoutMs: 30000 });
       }
 
       // Clear recovery data on successful submission
@@ -1344,8 +1453,11 @@ const App = {
       console.error('[Report] Failed to submit:', e);
       if (!interrupted) {
         this.showScreen('report');
+        // The interview itself finished normally, so the tone stays calm — but
+        // the team does need to know the submission didn't land, otherwise the
+        // candidate's interview would be lost silently.
         document.getElementById('report-container').innerHTML =
-          `<p class="error-msg">⚠️ Something went wrong submitting your interview. Please let the recruitment team know.</p>`;
+          `<p class="error-msg">Thank you for completing your interview. Your responses could not be uploaded automatically — please let the recruitment team know so they can retrieve them.</p>`;
       }
     }
   },
@@ -1479,8 +1591,7 @@ const App = {
         else { this.startListening(); }
       });
     } catch (e) {
-      this.s.isProcessing = false;
-      if (!this.s.quitting) this.handleErr(e);
+      this._recoverTurn(e);
     }
   },
 
@@ -1695,12 +1806,23 @@ const App = {
     setTimeout(() => el.classList.remove('error'), 2000);
   },
 
+  // Last-resort handler for an unexpected failure with no turn to recover.
+  // Deliberately says NOTHING to the candidate — an interview must never show
+  // an error message or a broken-looking apology bubble. Recoverable
+  // conversational failures are handled by App._recoverTurn instead; this only
+  // restores the controls so the candidate can keep speaking, and records the
+  // failure in the transcript for the admin.
   handleErr(e) {
     console.error(e);
     this.clearSilenceTimer();
     this.setStatus('idle');
     this.setMic(true);
-    this.renderAIMsg('I apologise, there was a technical issue. Please try again.', /*progressive*/ false);
-    this.showToast('Connection error — please check the server is running.', 'error');
+    if (typeof this.addEntry === 'function') {
+      this.addEntry(
+        'System (internal note — not shown to candidate)',
+        `Unexpected client error: ${e && e.message}`,
+        STAGE_LABELS[this.stage] || ''
+      );
+    }
   }
 };

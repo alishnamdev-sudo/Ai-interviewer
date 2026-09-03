@@ -56,9 +56,23 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // model call goes through withGeminiRetry(): each attempt is capped so a hung
 // request can't stall the interview, and failures are retried with backoff.
 // Only genuine client errors (4xx other than 429) are not retried.
-const GEMINI_ATTEMPTS = 3;
-const GEMINI_ATTEMPT_TIMEOUT_MS = 25000;
-const GEMINI_RETRY_DELAYS_MS = [800, 2000];
+// Timeouts are deliberately per-call-site rather than global: a candidate
+// waiting mid-conversation must not sit in silence for long, so a chat turn
+// gets a tight budget and gives up quickly (the client then asks a fallback
+// question), while a whiteboard image evaluation or the final report — where
+// nobody is waiting on a spoken reply — can take much longer.
+const GEMINI_BUDGETS = {
+  // A conversational turn: worst case ≈ 20.5s, comfortably inside the client's
+  // own budget so the candidate is never left waiting in silence for long.
+  chat:     { attempts: 2, timeoutMs: 10000, delayMs: 500 },
+  // A ten-token YES/NO classification, measured at 1.4-2.1s in practice. The
+  // timeout is set well clear of that: too tight and a merely slow call would
+  // time out and fail open, quietly skipping conduct screening. It runs
+  // concurrently with the chat call, so this budget adds no latency of its own.
+  conduct:  { attempts: 2, timeoutMs: 8000,  delayMs: 300 },
+  evaluate: { attempts: 2, timeoutMs: 30000, delayMs: 1000 },
+  slow:     { attempts: 3, timeoutMs: 45000, delayMs: 1500 }
+};
 
 function isRetryableGeminiError(err) {
   const status = err && (err.status || err.statusCode);
@@ -66,23 +80,24 @@ function isRetryableGeminiError(err) {
   return true;
 }
 
-async function withGeminiRetry(label, fn) {
+async function withGeminiRetry(label, fn, budget = GEMINI_BUDGETS.chat) {
+  const { attempts, timeoutMs, delayMs } = budget;
   let lastErr;
-  for (let attempt = 1; attempt <= GEMINI_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     let timer;
     try {
       return await Promise.race([
         fn(),
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`timed out after ${GEMINI_ATTEMPT_TIMEOUT_MS}ms`)), GEMINI_ATTEMPT_TIMEOUT_MS);
+          timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
         })
       ]);
     } catch (err) {
       lastErr = err;
-      const retryable = isRetryableGeminiError(err) && attempt < GEMINI_ATTEMPTS;
-      console.warn(`[${label}] attempt ${attempt}/${GEMINI_ATTEMPTS} failed: ${err.message}${retryable ? ' — retrying' : ''}`);
+      const retryable = isRetryableGeminiError(err) && attempt < attempts;
+      console.warn(`[${label}] attempt ${attempt}/${attempts} failed: ${err.message}${retryable ? ' — retrying' : ''}`);
       if (!retryable) break;
-      await new Promise(r => setTimeout(r, GEMINI_RETRY_DELAYS_MS[attempt - 1] || 2000));
+      await new Promise(r => setTimeout(r, delayMs));
     } finally {
       clearTimeout(timer);
     }
@@ -545,7 +560,7 @@ CANDIDATE MESSAGE: "${userMessage}"
 
 Respond with ONLY one word, exactly: YES or NO.`;
 
-  const result = await withGeminiRetry('conduct-check', () => model.generateContent(prompt));
+  const result = await withGeminiRetry('conduct-check', () => model.generateContent(prompt), GEMINI_BUDGETS.conduct);
   return result.response.text().trim().toUpperCase().startsWith('YES');
 }
 
@@ -610,16 +625,6 @@ app.post('/api/chat', async (req, res) => {
 
     if (!userMessage) return res.status(400).json({ error: 'userMessage is required' });
 
-    const conduct = await checkConduct(userMessage, teacherName, misconductCount);
-    if (conduct.flagged) {
-      return res.json({
-        text: conduct.text,
-        stageComplete: false,
-        misconductWarning: conduct.misconductWarning,
-        misconductEnd: conduct.misconductEnd
-      });
-    }
-
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
       systemInstruction: buildSystemPrompt(stage, teacherName, subject, resumeSummary, resumeInfo),
@@ -629,13 +634,32 @@ app.post('/api/chat', async (req, res) => {
       generationConfig: { temperature: 0.75, maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } }
     });
 
-    const result = await withGeminiRetry('chat', () => {
-      // A fresh chat session per attempt — a failed attempt must not leave a
-      // half-appended turn in the SDK's internal history for the retry.
-      const chat = model.startChat({ history });
-      return chat.sendMessage(userMessage);
-    });
-    const fullText = result.response.text().trim();
+    // The conduct check and the reply are issued CONCURRENTLY rather than in
+    // sequence. Run one after the other, their retry budgets add up, and a bad
+    // day for the API could leave the candidate watching "Thinking…" for the
+    // sum of both; in parallel the turn costs only the slower of the two. The
+    // reply is simply discarded if the message turns out to be flagged.
+    const [conduct, chatOutcome] = await Promise.all([
+      checkConduct(userMessage, teacherName, misconductCount),
+      withGeminiRetry('chat', () => {
+        // A fresh chat session per attempt — a failed attempt must not leave a
+        // half-appended turn in the SDK's internal history for the retry.
+        const chat = model.startChat({ history });
+        return chat.sendMessage(userMessage);
+      }).then(result => ({ result }), error => ({ error }))
+    ]);
+
+    if (conduct.flagged) {
+      return res.json({
+        text: conduct.text,
+        stageComplete: false,
+        misconductWarning: conduct.misconductWarning,
+        misconductEnd: conduct.misconductEnd
+      });
+    }
+
+    if (chatOutcome.error) throw chatOutcome.error;
+    const fullText = chatOutcome.result.response.text().trim();
 
     const stageComplete = fullText.includes('[STAGE_COMPLETE]');
     // Defense in depth: even with rule #11 above, the model can occasionally echo
@@ -711,7 +735,7 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
     const data = fileBase64.replace(/^data:[\w/+-]+;base64,/, '');
     const parts = [{ text: promptText }, { inlineData: { mimeType, data } }];
 
-    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
+    const result = await withGeminiRetry('parse-resume', () => model.generateContent(parts), GEMINI_BUDGETS.slow);
     let raw = result.response.text().trim();
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
@@ -1017,7 +1041,7 @@ ${jsonShape}`;
       parts.push({ inlineData: { mimeType: 'image/png', data } });
     }
 
-    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
+    const result = await withGeminiRetry('evaluate', () => model.generateContent(parts), GEMINI_BUDGETS.evaluate);
     let raw = result.response.text().trim();
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
@@ -1065,7 +1089,9 @@ Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
     const data = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const parts = [{ text: promptText }, { inlineData: { mimeType: 'image/jpeg', data } }];
 
-    const result = await withGeminiRetry('gemini', () => model.generateContent(parts));
+    // Background engagement snapshot — nobody is waiting on it, and the caller
+    // already ignores failures, so a single attempt is enough.
+    const result = await withGeminiRetry('analyze-expression', () => model.generateContent(parts), { attempts: 1, timeoutMs: 20000, delayMs: 0 });
     const notes = result.response.text().trim();
 
     res.json({ success: true, notes });
@@ -1168,7 +1194,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     // candidates most likely to need one flagged.
     let reportData;
     try {
-      const result = await withGeminiRetry('gemini', () => model.generateContent(prompt));
+      const result = await withGeminiRetry('report', () => model.generateContent(prompt), GEMINI_BUDGETS.slow);
       let raw = result.response.text().trim();
       raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       reportData = JSON.parse(raw);

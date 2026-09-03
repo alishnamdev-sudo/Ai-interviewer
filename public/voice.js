@@ -365,7 +365,37 @@ const VoiceManager = (() => {
   let progressHook = null;
   function setProgressHook(fn) { progressHook = fn; }
   function emitProgress(n) {
+    // Any sign of progress means speech is alive — push the stall watchdog back.
+    armSpeechWatchdog();
     if (progressHook) { try { progressHook(n); } catch (_) {} }
+  }
+
+  // The interview state machine advances only when speak()'s onEnd fires, so a
+  // callback that never arrives freezes the whole interview — and that is a
+  // real failure mode: some mobile browsers silently never fire an utterance's
+  // 'end' event, and a throw inside either engine would otherwise swallow the
+  // callback entirely. Every speak() therefore arms a watchdog; whichever comes
+  // first — real completion or the watchdog — fires onEnd exactly once.
+  //
+  // It is an INACTIVITY watchdog, not a total-duration one: every word of
+  // progress pushes it back, so a long reply or a slow synthesis round-trip is
+  // never cut short — it fires only when speech has genuinely stalled. 20s is
+  // comfortably longer than any legitimate silent gap (the slowest realistic
+  // TTS round-trip on a weak mobile connection), so it won't clip a line while
+  // still keeping worst-case dead air bounded.
+  const WATCHDOG_IDLE_MS = 20000;
+  let _watchdogTimer = null;
+  let _watchdogFire = null; // set while a line is speaking; re-armed by emitProgress
+
+  function clearSpeechWatchdog() {
+    if (_watchdogTimer) { clearTimeout(_watchdogTimer); _watchdogTimer = null; }
+    _watchdogFire = null;
+  }
+
+  function armSpeechWatchdog() {
+    if (!_watchdogFire) return;
+    if (_watchdogTimer) clearTimeout(_watchdogTimer);
+    _watchdogTimer = setTimeout(_watchdogFire, WATCHDOG_IDLE_MS);
   }
 
   function speak(text, onEnd, onError) {
@@ -378,14 +408,53 @@ const VoiceManager = (() => {
     // must not fire once we've moved on. cancelSpeech (not stopSpeaking) so the
     // NEW line's just-rendered bubble isn't snapped to fully-revealed.
     cancelSpeech();
+    clearSpeechWatchdog();
     _cancelledByCaller = false;
 
-    if (ttsEngine === 'sarvam') {
-      console.log('[Voice] Using Sarvam TTS engine');
-      sarvamSpeak(text.trim(), onEnd, onError);
-    } else {
-      console.log('[Voice] Using browser speech synthesis');
-      browserSpeak(text.trim(), onEnd, onError);
+    const clean = text.trim();
+    const gen = _speakGen;
+    let settled = false;
+
+    // Fires onEnd at most once, and only if this line is still the current one
+    // (a superseded line's callback must never advance the interview).
+    const finish = (viaWatchdog) => {
+      if (settled) return;
+      settled = true;
+      clearSpeechWatchdog();
+      if (gen !== _speakGen) return; // superseded by a newer line
+      if (viaWatchdog) {
+        console.warn('[Voice] Speech watchdog fired — engine never signalled completion; continuing.');
+        _isSpeaking = false;
+        emitProgress(Infinity);
+      }
+      if (onEnd) onEnd();
+    };
+    const fail = (e) => {
+      if (settled) return;
+      settled = true;
+      clearSpeechWatchdog();
+      if (gen !== _speakGen) return;
+      if (onError) onError(e); else if (onEnd) onEnd();
+    };
+
+    _watchdogFire = () => finish(true);
+    armSpeechWatchdog();
+
+    try {
+      if (ttsEngine === 'sarvam') {
+        console.log('[Voice] Using Sarvam TTS engine');
+        sarvamSpeak(clean, () => finish(false), fail);
+      } else {
+        console.log('[Voice] Using browser speech synthesis');
+        browserSpeak(clean, () => finish(false), fail);
+      }
+    } catch (e) {
+      // Neither engine could even start (e.g. speechSynthesis missing) — the
+      // line goes unspoken, but the interview must still move on.
+      console.error('[Voice] Speech engine failed to start:', e);
+      _isSpeaking = false;
+      emitProgress(Infinity);
+      finish(false);
     }
   }
 
@@ -694,6 +763,7 @@ const VoiceManager = (() => {
   // speak() when a new line supersedes the old one (the new bubble must start
   // hidden, not snapped to fully-revealed).
   function cancelSpeech() {
+    clearSpeechWatchdog();
     // Sarvam path: invalidate the generation, abort any fetch, stop playback.
     _speakGen++;
     if (_ttsAbort) { try { _ttsAbort.abort(); } catch (_) {} _ttsAbort = null; }
