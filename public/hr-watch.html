@@ -6,6 +6,7 @@
   <title>Live Interview - HR Dashboard</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -59,18 +60,18 @@
     }
     .video-area {
       flex: 1;
+      min-height: 420px;
       background: #000;
       border-radius: 8px;
       display: flex;
-      align-items: center;
-      justify-content: center;
+      flex-direction: column;
       position: relative;
       overflow: hidden;
-      flex-direction: column;
     }
     video {
       width: 100%;
       flex: 1;
+      min-height: 0;
       object-fit: contain;
       background: #000;
     }
@@ -82,9 +83,32 @@
       border-top: 1px solid #333;
     }
     .no-video {
+      position: absolute;
+      inset: 0 0 60px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       color: #999;
       text-align: center;
+      padding: 20px;
     }
+    .sound-btn {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 18px;
+      border: none;
+      border-radius: 999px;
+      background: #667eea;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      z-index: 2;
+    }
+    .sound-btn:hover { background: #5568d3; }
     .sidebar {
       width: 300px;
       background: #f9fafb;
@@ -142,10 +166,6 @@
       color: white;
     }
     .btn-danger:hover { background: #dc2626; }
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
     .error {
       padding: 15px;
       background: #fee2e2;
@@ -154,7 +174,7 @@
       border-radius: 4px;
       margin-bottom: 15px;
     }
-    .success {
+    .notice {
       padding: 15px;
       background: #dcfce7;
       border-left: 4px solid #10b981;
@@ -165,6 +185,9 @@
     @media (max-width: 768px) {
       .main-content {
         flex-direction: column;
+      }
+      .video-area {
+        min-height: 280px;
       }
       .sidebar {
         width: 100%;
@@ -181,18 +204,15 @@
   <div class="container">
     <div class="header">
       <h1>📹 Live Interview Monitor</h1>
-      <div class="status connecting" id="status">Connecting...</div>
+      <div class="status connecting" id="status">Connecting…</div>
     </div>
 
     <div class="main-content">
       <div class="video-area">
-        <div style="width: 100%; height: 100%; display: flex; flex-direction: column;">
-          <video id="liveVideo" playsinline controls style="flex: 1; background: #000;"></video>
-          <canvas id="audioVisualizer" style="width: 100%; height: 60px; background: #1a1a1a;"></canvas>
-          <div class="no-video" id="noVideoMsg" style="display: none;">
-            Waiting for interview to start...
-          </div>
-        </div>
+        <video id="liveVideo" playsinline controls></video>
+        <canvas id="audioVisualizer"></canvas>
+        <div class="no-video" id="noVideoMsg">Waiting for the interview to start…</div>
+        <button class="sound-btn" id="soundBtn" hidden>🔊 Click to enable sound</button>
       </div>
 
       <div class="sidebar">
@@ -209,24 +229,36 @@
         </div>
 
         <div class="info-block">
-          <div class="info-label">Stream Time</div>
+          <div class="info-label">Interview Time</div>
           <div class="timer" id="timer">00:00:00</div>
         </div>
 
         <div class="info-block">
           <div class="info-label">Stream Status</div>
-          <div class="info-value" id="streamStatus" style="color: #10b981;">Connected</div>
+          <div class="info-value" id="streamStatus">Connecting…</div>
         </div>
 
         <div class="controls">
-          <button class="btn-primary" id="refreshBtn" onclick="location.reload()">Refresh</button>
-          <button class="btn-danger" id="exitBtn" onclick="window.close()">Exit</button>
+          <button class="btn-primary" onclick="location.reload()">Refresh</button>
+          <button class="btn-danger" onclick="window.location.href = '/hr-dashboard'">Back to Dashboard</button>
         </div>
       </div>
     </div>
   </div>
 
   <script>
+    // ── How this works ──────────────────────────────────────────────────────
+    // The candidate's browser records the interview with MediaRecorder and
+    // appends each chunk to a file on the server as it goes. This page polls
+    // /api/stream/data for the bytes appended since its last poll and feeds
+    // them into a MediaSource. The file is one continuous WebM stream, so the
+    // <video> plays it like any other video — picture and sound — a few
+    // seconds behind real time. Plain HTTP: nothing for a proxy to block.
+    const POLL_MS = 1500;
+    const TARGET_LAG_S = 4;   // play this far behind the newest data (buffer against upload/poll jitter)
+    const MAX_LAG_S = 20;     // fallen further behind than this (tab was hidden?) → jump forward
+    const KEEP_BEHIND_S = 90; // evict already-played media older than this; long interviews would otherwise hit the SourceBuffer quota
+
     const video = document.getElementById('liveVideo');
     const canvas = document.getElementById('audioVisualizer');
     const canvasCtx = canvas.getContext('2d');
@@ -237,131 +269,40 @@
     const streamStatusEl = document.getElementById('streamStatus');
     const errorContainer = document.getElementById('errorContainer');
     const noVideoMsg = document.getElementById('noVideoMsg');
+    const soundBtn = document.getElementById('soundBtn');
 
-    let ws = null;
+    const streamId = (window.location.pathname.match(/\/hr-watch\/([a-f0-9-]+)/i) || [])[1] || null;
+    // Identifies this tab to the server so the dashboard's viewer count is right.
+    const viewerId = (() => {
+      try {
+        let v = sessionStorage.getItem('hrViewerId');
+        if (!v) { v = crypto.randomUUID(); sessionStorage.setItem('hrViewerId', v); }
+        return v;
+      } catch (_) { return Math.random().toString(36).slice(2); }
+    })();
+
+    let offset = 0;          // bytes of the recording fetched so far
     let mediaSource = null;
     let sourceBuffer = null;
+    let sourceReady = null;  // promise: SourceBuffer exists
+    const pending = [];      // ArrayBuffers waiting for the SourceBuffer
+    let playbackStarted = false;
+    let ended = false;
+    let stopped = false;
+    let failures = 0;
     let streamStartTime = null;
-    let videoChunks = [];
-    let isConnected = false;
+    let timerInterval = null;
 
-    // Audio visualizer setup
-    let audioContext = null;
-    let analyser = null;
-    let animationId = null;
-    const BAR_COUNT = 32;
-    const COLOR_BARS = '#667eea';
-    const COLOR_BG = '#1a1a1a';
-
-    // ─── Audio Visualizer ─────────────────────────────────────────────────────
-    function initAudioVisualizer() {
-      try {
-        // Create audio context from video element
-        if (!audioContext) {
-          audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-
-        if (audioContext.state === 'suspended') {
-          audioContext.resume();
-        }
-
-        if (!analyser) {
-          const source = audioContext.createMediaElementAudioSource(video);
-          analyser = audioContext.createAnalyser();
-          analyser.fftSize = 256;
-          source.connect(analyser);
-          analyser.connect(audioContext.destination);
-        }
-
-        // Start drawing visualizer
-        if (!animationId) {
-          drawVisualizer();
-        }
-      } catch (e) {
-        console.warn('Audio visualizer not available:', e);
-      }
-    }
-
-    function drawVisualizer() {
-      animationId = requestAnimationFrame(drawVisualizer);
-
-      if (!analyser || !canvasCtx) return;
-
-      // Set canvas size
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
-
-      // Get frequency data
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      analyser.getByteFrequencyData(dataArray);
-
-      // Draw background
-      canvasCtx.fillStyle = COLOR_BG;
-      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Draw bars
-      const barWidth = (canvas.width / BAR_COUNT) * 0.8;
-      const barGap = (canvas.width / BAR_COUNT) * 0.2;
-      const maxFrequencies = Math.floor(dataArray.length / BAR_COUNT);
-
-      for (let i = 0; i < BAR_COUNT; i++) {
-        // Get average frequency for this bar
-        const start = i * maxFrequencies;
-        const end = start + maxFrequencies;
-        let sum = 0;
-        for (let j = start; j < end && j < dataArray.length; j++) {
-          sum += dataArray[j];
-        }
-        const avg = sum / maxFrequencies;
-
-        // Normalize to canvas height
-        const barHeight = (avg / 255) * canvas.height;
-        const x = i * (barWidth + barGap);
-        const y = canvas.height - barHeight;
-
-        // Draw bar with gradient
-        const gradient = canvasCtx.createLinearGradient(0, y, 0, canvas.height);
-        gradient.addColorStop(0, COLOR_BARS);
-        gradient.addColorStop(1, '#764ba2');
-
-        canvasCtx.fillStyle = gradient;
-        canvasCtx.fillRect(x, y, barWidth, barHeight);
-
-        // Draw top highlight
-        canvasCtx.fillStyle = 'rgba(255, 255, 255, 0.3)';
-        canvasCtx.fillRect(x, y - 2, barWidth, 2);
-      }
-    }
-
-    function stopVisualizer() {
-      if (animationId) {
-        cancelAnimationFrame(animationId);
-        animationId = null;
-      }
-    }
-
-    function getStreamId() {
-      const path = window.location.pathname;
-      const match = path.match(/\/hr-watch\/([a-f0-9-]+)/i);
-      return match ? match[1] : null;
-    }
-
-    function showError(msg) {
+    // ── UI helpers ──────────────────────────────────────────────────────────
+    function showMessage(msg, className) {
       const div = document.createElement('div');
-      div.className = 'error';
+      div.className = className;
       div.textContent = msg;
       errorContainer.innerHTML = '';
       errorContainer.appendChild(div);
     }
-
-    function showSuccess(msg) {
-      const div = document.createElement('div');
-      div.className = 'success';
-      div.textContent = msg;
-      errorContainer.innerHTML = '';
-      errorContainer.appendChild(div);
-      setTimeout(() => errorContainer.innerHTML = '', 5000);
-    }
+    const showError = msg => showMessage(msg, 'error');
+    const showNotice = msg => showMessage(msg, 'notice');
 
     function updateStatus(text, className) {
       statusEl.textContent = text;
@@ -369,165 +310,268 @@
       streamStatusEl.textContent = text;
     }
 
-    function startTimer() {
-      if (!streamStartTime) streamStartTime = Date.now();
-      setInterval(() => {
-        const elapsed = Math.floor((Date.now() - streamStartTime) / 1000);
-        const hours = Math.floor(elapsed / 3600);
-        const minutes = Math.floor((elapsed % 3600) / 60);
-        const seconds = elapsed % 60;
-        timerEl.textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-      }, 1000);
+    function toLogin() {
+      window.location.href = '/hr-login?next=' + encodeURIComponent(window.location.pathname);
     }
 
-    function initMediaSource() {
+    function startTimer(startTime) {
+      streamStartTime = startTime;
+      clearInterval(timerInterval);
+      const tick = () => {
+        const elapsed = Math.max(0, Math.floor((Date.now() - streamStartTime) / 1000));
+        const h = Math.floor(elapsed / 3600), m = Math.floor((elapsed % 3600) / 60), s = elapsed % 60;
+        timerEl.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      };
+      tick();
+      timerInterval = setInterval(tick, 1000);
+    }
+
+    // ── Audio visualizer ────────────────────────────────────────────────────
+    // Routing the <video>'s audio through an AudioContext silences it while
+    // the context is suspended, and browsers keep it suspended until the
+    // viewer interacts with the page — so this is only wired up from a click.
+    let audioContext = null;
+    let analyser = null;
+    let animationId = null;
+    const BAR_COUNT = 32;
+
+    function initAudioVisualizer() {
       try {
+        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioContext.state === 'suspended') audioContext.resume();
+        if (!analyser) {
+          const source = audioContext.createMediaElementSource(video);
+          analyser = audioContext.createAnalyser();
+          analyser.fftSize = 256;
+          source.connect(analyser);
+          analyser.connect(audioContext.destination);
+        }
+        if (!animationId) drawVisualizer();
+      } catch (e) {
+        console.warn('[HR-Watch] Audio visualizer not available:', e);
+      }
+    }
+
+    function drawVisualizer() {
+      animationId = requestAnimationFrame(drawVisualizer);
+      if (!analyser) return;
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+
+      canvasCtx.fillStyle = '#1a1a1a';
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const slot = canvas.width / BAR_COUNT;
+      const barWidth = slot * 0.8;
+      const binsPerBar = Math.floor(data.length / BAR_COUNT);
+      for (let i = 0; i < BAR_COUNT; i++) {
+        let sum = 0;
+        for (let j = i * binsPerBar; j < (i + 1) * binsPerBar; j++) sum += data[j];
+        const barHeight = (sum / binsPerBar / 255) * canvas.height;
+        const x = i * slot, y = canvas.height - barHeight;
+        const gradient = canvasCtx.createLinearGradient(0, y, 0, canvas.height);
+        gradient.addColorStop(0, '#667eea');
+        gradient.addColorStop(1, '#764ba2');
+        canvasCtx.fillStyle = gradient;
+        canvasCtx.fillRect(x, y, barWidth, barHeight);
+      }
+    }
+
+    function stopVisualizer() {
+      if (animationId) cancelAnimationFrame(animationId);
+      animationId = null;
+    }
+
+    // ── MediaSource plumbing ────────────────────────────────────────────────
+    function initMediaSource(serverMime) {
+      if (sourceReady) return sourceReady;
+      sourceReady = new Promise((resolve, reject) => {
+        if (!window.MediaSource) {
+          return reject(new Error('This browser cannot play live streams (no MediaSource support). Please use Chrome or Edge.'));
+        }
+        const candidates = [serverMime, 'video/webm; codecs="vp9,opus"', 'video/webm; codecs="vp8,opus"', 'video/webm'].filter(Boolean);
+        const type = candidates.find(t => MediaSource.isTypeSupported(t));
+        if (!type) {
+          return reject(new Error(`This browser cannot play the recording format (${serverMime || 'unknown'}). Please use Chrome or Edge.`));
+        }
         mediaSource = new MediaSource();
-        video.src = URL.createObjectURL(mediaSource);
         mediaSource.addEventListener('sourceopen', () => {
-          // Try webm first, then mp4
-          const codecs = [
-            'video/webm; codecs="vp8, vorbis"',
-            'video/webm; codecs="vp9, opus"',
-            'video/webm',
-            'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
-            'video/mp4'
-          ];
-
-          let supported = null;
-          for (const codec of codecs) {
-            if (MediaSource.isTypeSupported(codec)) {
-              supported = codec;
-              break;
-            }
-          }
-
-          if (!supported) {
-            console.warn('No supported codec found, using generic webm');
-            supported = 'video/webm';
-          }
-
           try {
-            sourceBuffer = mediaSource.addSourceBuffer(supported);
-            sourceBuffer.addEventListener('error', e => console.error('SourceBuffer error:', e));
-            console.log('MediaSource initialized with:', supported);
+            sourceBuffer = mediaSource.addSourceBuffer(type);
+            sourceBuffer.addEventListener('updateend', pump);
+            sourceBuffer.addEventListener('error', () => {
+              console.error('[HR-Watch] SourceBuffer error');
+              showError('Video decode error — click Refresh to reconnect.');
+            });
+            console.log('[HR-Watch] MediaSource ready:', type);
+            resolve();
           } catch (e) {
-            showError('Could not initialize media: ' + e.message);
+            reject(e);
           }
-        });
-      } catch (e) {
-        showError('MediaSource not supported in this browser');
-        console.error(e);
-      }
-    }
-
-    function connectWebSocket() {
-      const streamId = getStreamId();
-      if (!streamId) {
-        showError('Invalid or missing stream ID');
-        updateStatus('Error', 'disconnected');
-        return;
-      }
-
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/api/stream/watch?id=${streamId}`;
-      console.log(`[HR-Watch] Connecting to WebSocket: ${url}`);
-
-      try {
-        ws = new WebSocket(url);
-      } catch (e) {
-        console.error('[HR-Watch] Failed to create WebSocket:', e);
-        showError('Failed to create WebSocket connection: ' + e.message);
-        updateStatus('Error', 'disconnected');
-        return;
-      }
-
-      ws.onopen = () => {
-        console.log('[HR-Watch] WebSocket connected');
-        isConnected = true;
-        updateStatus('Live', 'live');
-        showSuccess('Connected to interview stream');
-        initMediaSource();
-      };
-
-      ws.binaryType = 'arraybuffer';
-
-      ws.onmessage = (event) => {
-        // Check if it's a text message (metadata) or binary (chunk)
-        if (typeof event.data === 'string') {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'metadata') {
-              console.log('[HR-Watch] Received metadata:', msg);
-              candidateNameEl.textContent = msg.candidateName || '—';
-              subjectEl.textContent = msg.subject || '—';
-              startTimer();
-              noVideoMsg.style.display = 'none';
-              // Start audio visualizer when metadata received
-              initAudioVisualizer();
-            }
-          } catch (e) {
-            console.error('[HR-Watch] Failed to parse message:', e);
-          }
-        } else if (event.data instanceof ArrayBuffer) {
-          // Binary chunk: read 4-byte size prefix + chunk data
-          if (sourceBuffer && mediaSource && event.data.byteLength > 4) {
-            try {
-              const view = new Uint8Array(event.data);
-              const sizeBuffer = new Uint32Array(event.data, 0, 1);
-              const size = sizeBuffer[0];
-              const chunk = new Uint8Array(event.data, 4);
-
-              if (chunk.length > 0) {
-                videoChunks.push(chunk);
-                if (sourceBuffer.updating === false && videoChunks.length > 0) {
-                  sourceBuffer.appendBuffer(videoChunks.shift());
-                }
-              }
-            } catch (e) {
-              console.error('[HR-Watch] Failed to process chunk:', e);
-            }
-          }
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('[HR-Watch] WebSocket error:', error);
-        showError('Stream connection error: ' + (error.message || 'Unknown error'));
-        updateStatus('Error', 'disconnected');
-        stopVisualizer();
-      };
-
-      ws.onclose = (event) => {
-        console.log(`[HR-Watch] WebSocket disconnected: code=${event.code}, reason=${event.reason}`);
-        isConnected = false;
-        updateStatus('Disconnected', 'disconnected');
-        if (event.code === 1008) {
-          showError('Stream not found or invalid stream ID');
-        } else {
-          showError('Stream connection closed');
-        }
-        stopVisualizer();
-        // Try to reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
-      };
-    }
-
-    // Handle SourceBuffer update events
-    if (mediaSource) {
-      mediaSource.addEventListener('sourceopen', () => {
-        if (sourceBuffer) {
-          sourceBuffer.addEventListener('updateend', () => {
-            if (videoChunks.length > 0 && sourceBuffer.updating === false) {
-              sourceBuffer.appendBuffer(videoChunks.shift());
-            }
-          });
-        }
+        }, { once: true });
+        video.src = URL.createObjectURL(mediaSource);
       });
+      return sourceReady;
     }
 
-    // Initialize
-    connectWebSocket();
+    // Feeds the SourceBuffer one operation at a time (it only accepts one
+    // append/remove at once); re-entered from every `updateend`.
+    function pump() {
+      if (!sourceBuffer || sourceBuffer.updating || !mediaSource || mediaSource.readyState !== 'open') return;
+
+      const buffered = video.buffered;
+      if (buffered.length && video.currentTime - buffered.start(0) > KEEP_BEHIND_S * 2) {
+        sourceBuffer.remove(0, video.currentTime - KEEP_BEHIND_S);
+        return; // updateend → pump again
+      }
+
+      if (pending.length) {
+        try {
+          sourceBuffer.appendBuffer(pending[0]);
+          pending.shift();
+        } catch (e) {
+          if (e.name === 'QuotaExceededError' && buffered.length && video.currentTime > 10) {
+            sourceBuffer.remove(0, video.currentTime - 5); // make room, then retry this chunk on updateend
+          } else {
+            console.error('[HR-Watch] appendBuffer failed:', e);
+            showError('Playback error: ' + e.message + ' — click Refresh to reconnect.');
+            pending.shift();
+          }
+        }
+        return;
+      }
+
+      if (ended) {
+        try { mediaSource.endOfStream(); } catch (_) {}
+        return;
+      }
+      followLiveEdge();
+    }
+
+    function followLiveEdge() {
+      const buffered = video.buffered;
+      if (!buffered.length) return;
+      const liveEdge = buffered.end(buffered.length - 1);
+      const lag = liveEdge - video.currentTime;
+      if (!playbackStarted) {
+        if (liveEdge < TARGET_LAG_S) return; // let a little media accumulate before starting
+        video.currentTime = Math.max(buffered.start(0), liveEdge - TARGET_LAG_S);
+        startPlayback();
+      } else if (lag > MAX_LAG_S && !video.paused) {
+        console.log(`[HR-Watch] ${lag.toFixed(1)}s behind live — jumping forward`);
+        video.currentTime = liveEdge - TARGET_LAG_S;
+      }
+    }
+
+    async function startPlayback() {
+      playbackStarted = true;
+      noVideoMsg.hidden = true;
+      video.muted = false;
+      try {
+        await video.play();
+      } catch (_) {
+        // Autoplay with sound is blocked until the viewer interacts with the page.
+        video.muted = true;
+        try { await video.play(); } catch (_) {}
+        soundBtn.hidden = false;
+      }
+      updateStatus('Live', 'live');
+    }
+
+    soundBtn.addEventListener('click', () => {
+      video.muted = false;
+      if (video.paused) video.play().catch(() => {});
+      soundBtn.hidden = true;
+    });
+    // Any click counts as the gesture that lets the visualizer hear the audio.
+    document.addEventListener('click', () => { if (playbackStarted) initAudioVisualizer(); });
+
+    // ── Polling ─────────────────────────────────────────────────────────────
+    function fatal(msg) {
+      stopped = true;
+      showError(msg);
+      updateStatus('Error', 'disconnected');
+    }
+
+    function finish(msg) {
+      if (ended) return;
+      ended = true;
+      stopped = true;
+      clearInterval(timerInterval);
+      updateStatus('Ended', 'disconnected');
+      showNotice(msg + ' Everything received is still playable above.');
+      if (!playbackStarted) noVideoMsg.textContent = 'No video was received for this interview.';
+      pump();
+    }
+
+    async function poll() {
+      if (stopped) return;
+      let delay = POLL_MS;
+      try {
+        const url = `/api/stream/data?id=${encodeURIComponent(streamId)}&from=${offset}&viewer=${encodeURIComponent(viewerId)}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (res.status === 401) return toLogin();
+        if (res.status === 404 || res.status === 410) return finish('This interview has ended.');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+
+        const live = res.headers.get('X-Stream-Live') !== '0';
+        const more = res.headers.get('X-Stream-More') === '1';
+        const next = parseInt(res.headers.get('X-Stream-Offset'), 10);
+
+        if (res.status === 200) {
+          try {
+            await initMediaSource(res.headers.get('X-Stream-Mime') || '');
+          } catch (e) {
+            return fatal(e.message);
+          }
+          pending.push(await res.arrayBuffer());
+          pump();
+        }
+        if (Number.isFinite(next)) offset = next;
+        failures = 0;
+
+        if (more) {
+          delay = 0; // catching up after joining late — keep pulling
+        } else if (!live) {
+          return finish('The interview has ended.');
+        } else if (!playbackStarted) {
+          updateStatus('Buffering…', 'connecting');
+        }
+      } catch (e) {
+        failures++;
+        console.warn('[HR-Watch] poll failed:', e.message);
+        updateStatus('Reconnecting…', 'connecting');
+        delay = Math.min(POLL_MS * 2 ** failures, 10000);
+      }
+      setTimeout(poll, delay);
+    }
+
+    async function init() {
+      if (!streamId) return fatal('Invalid or missing stream ID.');
+      try {
+        const res = await fetch(`/api/stream/info?id=${encodeURIComponent(streamId)}`, { cache: 'no-store' });
+        if (res.status === 401) return toLogin();
+        if (res.status === 404) {
+          updateStatus('Not found', 'disconnected');
+          showError('This stream no longer exists — the interview has probably ended. The dashboard lists the interviews running right now.');
+          noVideoMsg.textContent = 'Stream not found';
+          return;
+        }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const info = await res.json();
+        candidateNameEl.textContent = info.candidateName || '—';
+        subjectEl.textContent = info.subject || '—';
+        startTimer(info.startTime);
+        poll();
+      } catch (e) {
+        fatal('Could not reach the server (' + e.message + '). Click Refresh to try again.');
+      }
+    }
+
+    video.addEventListener('ended', stopVisualizer);
+    init();
   </script>
 </body>
 </html>

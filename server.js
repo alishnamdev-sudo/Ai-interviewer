@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { WebSocketServer, WebSocket: SarvamWs } = require('ws');
+const WordExtractor = require('word-extractor');
 const store = require('./store');
 
 const app = express();
@@ -356,6 +357,13 @@ function requireHR(req, res, next) {
   res.status(401).json({ error: 'Not authenticated' });
 }
 
+// Same check for HTML pages: send a signed-out HR user to the login page
+// (and back here afterwards) rather than showing them a JSON error.
+function requireHRPage(req, res, next) {
+  if (req.session && req.session.isHR) return next();
+  res.redirect('/hr-login?next=' + encodeURIComponent(req.originalUrl));
+}
+
 app.post('/api/hr/login', (req, res) => {
   if (isRateLimited(req.ip)) {
     return res.status(429).json({ error: 'Too many attempts. Try again later.' });
@@ -700,7 +708,14 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ─── /api/parse-resume ────────────────────────────────────────────────────────
-const RESUME_MIME_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'text/plain']);
+// PDFs, images and plain text go to Gemini as-is (inlineData). Word files
+// (.doc/.docx) aren't a Gemini input type, so their text is extracted here
+// first and sent as plain text instead.
+const WORD_MIME_TYPES = new Set([
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+]);
+const RESUME_MIME_TYPES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'text/plain', ...WORD_MIME_TYPES]);
 
 app.post('/api/parse-resume', async (req, res) => {
   try {
@@ -710,7 +725,7 @@ app.post('/api/parse-resume', async (req, res) => {
       return res.status(400).json({ error: 'fileBase64 and mimeType are required' });
     }
     if (!RESUME_MIME_TYPES.has(mimeType)) {
-      return res.status(400).json({ error: 'Unsupported file type. Please upload a PDF, PNG, JPG, or TXT resume.' });
+      return res.status(400).json({ error: 'Unsupported file type. Please upload a PDF, PNG, JPG, TXT, or Word resume.' });
     }
 
     const model = genAI.getGenerativeModel({
@@ -733,7 +748,22 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
 }`;
 
     const data = fileBase64.replace(/^data:[\w/+-]+;base64,/, '');
-    const parts = [{ text: promptText }, { inlineData: { mimeType, data } }];
+    let parts;
+    if (WORD_MIME_TYPES.has(mimeType)) {
+      let resumeText = '';
+      try {
+        const doc = await new WordExtractor().extract(Buffer.from(data, 'base64'));
+        resumeText = [doc.getHeaders(), doc.getBody()].filter(Boolean).join('\n').trim();
+      } catch (e) {
+        console.warn('[/api/parse-resume] Word extraction failed:', e.message);
+      }
+      if (!resumeText) {
+        return res.status(400).json({ error: 'Could not read any text from this Word file. Please save it as a PDF and upload that instead.' });
+      }
+      parts = [{ text: `${promptText}\n\n--- RESUME TEXT ---\n${resumeText.slice(0, 40000)}` }];
+    } else {
+      parts = [{ text: promptText }, { inlineData: { mimeType, data } }];
+    }
 
     const result = await withGeminiRetry('parse-resume', () => model.generateContent(parts), GEMINI_BUDGETS.slow);
     let raw = result.response.text().trim();
@@ -794,6 +824,7 @@ app.post('/api/recording/chunk', express.raw({ type: 'application/octet-stream',
   const ext = RECORDING_EXTS.includes(req.query.ext) ? req.query.ext : 'webm';
   const file = findRecordingFile(id) || path.join(RECORDINGS_DIR, `${id}.${ext}`);
   fs.appendFileSync(file, req.body);
+  noteRecordingActivity(id); // keeps the HR live stream for this recording (if any) marked alive
   res.json({ success: true });
 });
 
@@ -1245,8 +1276,10 @@ Respond ONLY in this exact JSON format (no markdown fences):
 // the fallback whenever this stream fails.
 const SARVAM_STREAM_STT_MODEL = process.env.SARVAM_STREAM_STT_MODEL || 'saaras:v3';
 
-function attachSttStreamRelay(server) {
-  const wss = new WebSocketServer({ server, path: '/api/stt-stream', perMessageDeflate: false });
+// Returns a `noServer` WebSocketServer — see the upgrade dispatcher at the
+// bottom of this file for why it must not be bound to the HTTP server itself.
+function attachSttStreamRelay() {
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   wss.on('connection', (client, req) => {
     if (!SARVAM_API_KEY) {
       console.log('[stt-stream] Sarvam API key not configured, closing connection');
@@ -1328,47 +1361,181 @@ function attachSttStreamRelay(server) {
 
     upstream.on('error', err => {
       console.error('[stt-stream] Upstream Sarvam error:', err.message);
-      console.error('[stt-stream] Error details:', err.code, err);
-      if (err.response) {
-        console.error('[stt-stream] Response status:', err.response.statusCode);
-      }
       closeBoth();
     });
   });
+  return wss;
 }
 
 // ─── Live Interview Streaming (HR Dashboard) ─────────────────────────────────
-// Real-time video streaming from candidate's interview to HR viewers via WebSocket.
-// Active streams: streamId -> { viewers: Set<ws>, candidateName, subject, startTime }
-const liveStreams = new Map();
+// HR viewers watch a running interview by polling the recording that
+// recorder.js is already appending to on disk (data/recordings/<id>.webm):
+// GET /api/stream/data?id=<streamId>&from=<byteOffset> returns whatever bytes
+// were appended after `from`. A MediaRecorder file is one contiguous byte
+// stream, so the viewer feeds those bytes straight into a MediaSource and gets
+// normal video+audio playback — plain HTTP (nothing for a proxy to block), no
+// second upload from the candidate, nothing buffered in memory, and a late
+// joiner can start from byte 0 and jump to the live edge.
+const liveStreams = new Map();       // streamId -> { recordingId, candidateName, subject, startTime, lastActivityTime, endedAt, mimeType, viewers: Map<viewerId, lastSeenMs> }
+const recordingToStream = new Map(); // recordingId -> streamId
+const STREAM_ID_RE = RECORDING_ID_RE; // both are crypto.randomUUID()s
+const VIEWER_TIMEOUT_MS = 15 * 1000;           // a viewer that hasn't polled for this long has left
+const STREAM_STALE_MS = 2 * 60 * 1000;         // no recording chunks for this long → the candidate's tab is gone
+const STREAM_MAX_AGE_MS = 3 * 60 * 60 * 1000;  // longer than any interview
+const ENDED_STREAM_GRACE_MS = 60 * 1000;       // keep an ended stream briefly so viewers see "ended", not 404
+const STREAM_DATA_MAX_BYTES = 4 * 1024 * 1024; // per poll; a late joiner catches up over a few polls
 
-// Initiate a new live stream session (called when interview starts)
+function noteRecordingActivity(recordingId) {
+  const stream = liveStreams.get(recordingToStream.get(recordingId));
+  if (stream) stream.lastActivityTime = Date.now();
+}
+
+function dropStream(streamId) {
+  const stream = liveStreams.get(streamId);
+  if (stream) recordingToStream.delete(stream.recordingId);
+  liveStreams.delete(streamId);
+}
+
+// Whether the interview behind this stream is still running. Also the one
+// place dead streams get evicted, so everything that touches a stream calls it.
+function isStreamLive(streamId, stream, now = Date.now()) {
+  if (stream.endedAt) {
+    if (now - stream.endedAt > ENDED_STREAM_GRACE_MS) dropStream(streamId);
+    return false;
+  }
+  const age = now - stream.startTime;
+  const idle = now - stream.lastActivityTime;
+  if (age > STREAM_MAX_AGE_MS || idle > STREAM_STALE_MS) {
+    console.log(`[Stream] Cleaning up dead stream ${streamId} (age ${Math.round(age / 1000)}s, idle ${Math.round(idle / 1000)}s)`);
+    dropStream(streamId);
+    return false;
+  }
+  return true;
+}
+
+function activeViewerCount(stream, now = Date.now()) {
+  for (const [viewerId, seen] of stream.viewers) {
+    if (now - seen > VIEWER_TIMEOUT_MS) stream.viewers.delete(viewerId);
+  }
+  return stream.viewers.size;
+}
+
+// The container/codecs the viewer must open its MediaSource with, read from
+// the recording's own header (WebM's EBML magic plus the CodecID strings,
+// which sit in the first few KB). Null until the first chunk has landed.
+function sniffRecordingMime(file) {
+  let fd = null;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(16384);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const head = buf.subarray(0, n);
+    if (n >= 4 && head.readUInt32BE(0) === 0x1A45DFA3) {
+      const s = head.toString('latin1');
+      const video = s.includes('V_VP9') ? 'vp9' : s.includes('V_VP8') ? 'vp8' : s.includes('V_AV1') ? 'av01' : null;
+      const audio = s.includes('A_OPUS') ? 'opus' : s.includes('A_VORBIS') ? 'vorbis' : null;
+      const codecs = [video, audio].filter(Boolean).join(',');
+      return codecs ? `video/webm; codecs="${codecs}"` : 'video/webm';
+    }
+    if (n >= 12 && head.toString('latin1', 4, 8) === 'ftyp') return 'video/mp4';
+    return null;
+  } catch (_) {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+function getStream(req, res) {
+  const streamId = String(req.query.id || '');
+  const stream = STREAM_ID_RE.test(streamId) ? liveStreams.get(streamId) : null;
+  if (!stream) {
+    res.status(404).json({ error: 'Stream not found — the interview may have ended' });
+    return null;
+  }
+  return { streamId, stream };
+}
+
+// Called by the candidate's browser once recording has started.
 app.post('/api/stream/start', (req, res) => {
-  const { recordingId, candidateName, subject } = req.body;
+  const { recordingId, candidateName, subject } = req.body || {};
+  if (!RECORDING_ID_RE.test(String(recordingId || ''))) {
+    return res.status(400).json({ error: 'Invalid recording id' });
+  }
   const streamId = crypto.randomUUID();
+  const now = Date.now();
   liveStreams.set(streamId, {
     recordingId,
-    candidateName,
-    subject,
-    viewers: new Set(),
-    startTime: Date.now()
+    candidateName: String(candidateName || 'Candidate').slice(0, 120),
+    subject: String(subject || '').slice(0, 80),
+    startTime: now,
+    lastActivityTime: now,
+    endedAt: null,
+    mimeType: null,
+    viewers: new Map()
   });
+  recordingToStream.set(recordingId, streamId);
+  console.log(`[Stream] Live stream ${streamId} started (recording ${recordingId})`);
   res.json({ streamId });
 });
 
-
-// End a live stream session (called when interview ends)
+// Called when the interview ends (or the tab closes, via sendBeacon).
 app.post('/api/stream/end', (req, res) => {
-  const { streamId } = req.body;
-  if (liveStreams.has(streamId)) {
-    const stream = liveStreams.get(streamId);
-    // Close all connected viewers
-    stream.viewers.forEach(ws => {
-      try { ws.close(1000, 'Interview ended'); } catch (_) {}
-    });
-    liveStreams.delete(streamId);
+  const { streamId } = req.body || {};
+  const stream = liveStreams.get(String(streamId || ''));
+  if (stream && !stream.endedAt) {
+    stream.endedAt = Date.now();
+    console.log(`[Stream] Live stream ${streamId} ended`);
   }
   res.json({ success: true });
+});
+
+// Metadata for the watch page.
+app.get('/api/stream/info', requireHR, (req, res) => {
+  const found = getStream(req, res);
+  if (!found) return;
+  const { streamId, stream } = found;
+  res.json({
+    candidateName: stream.candidateName,
+    subject: stream.subject,
+    startTime: stream.startTime,
+    live: isStreamLive(streamId, stream),
+    viewerCount: activeViewerCount(stream)
+  });
+});
+
+// The bytes appended to the recording since `from`; 204 when nothing new yet.
+// Response headers: X-Stream-Offset (send back as `from` next time),
+// X-Stream-Live (0 once the interview is over), X-Stream-More (1 when this
+// response was capped and more is already available), X-Stream-Mime.
+app.get('/api/stream/data', requireHR, (req, res) => {
+  const found = getStream(req, res);
+  if (!found) return;
+  const { streamId, stream } = found;
+  const now = Date.now();
+  const live = isStreamLive(streamId, stream, now);
+
+  const viewerId = String(req.query.viewer || '').slice(0, 64);
+  if (viewerId) stream.viewers.set(viewerId, now);
+
+  const file = findRecordingFile(stream.recordingId);
+  const size = file ? fs.statSync(file).size : 0;
+  if (file && !stream.mimeType && size > 0) stream.mimeType = sniffRecordingMime(file);
+
+  const from = Math.min(size, Math.max(0, parseInt(req.query.from, 10) || 0));
+  const end = Math.min(size, from + STREAM_DATA_MAX_BYTES);
+
+  res.set({
+    'Cache-Control': 'no-store',
+    'X-Stream-Live': live ? '1' : '0',
+    'X-Stream-Offset': String(end),
+    'X-Stream-More': end < size ? '1' : '0',
+    'X-Stream-Mime': stream.mimeType || ''
+  });
+  if (end <= from) return res.status(204).end();
+
+  res.set({ 'Content-Type': 'application/octet-stream', 'Content-Length': String(end - from) });
+  fs.createReadStream(file, { start: from, end: end - 1 }).pipe(res);
 });
 
 // HR live-watch page
@@ -1382,54 +1549,26 @@ app.get('/hr-login', (req, res) => {
 });
 
 // HR dashboard - requires authentication
-app.get('/hr-dashboard', requireHR, (req, res) => {
+app.get('/hr-dashboard', requireHRPage, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'hr-dashboard.html'));
 });
 
-// API endpoint to get all active streams (requires HR auth)
+// Every interview still running, for the dashboard (requires HR auth)
 app.get('/api/streams/active', requireHR, (req, res) => {
   const now = Date.now();
-  const activeStreams = Array.from(liveStreams.entries())
-    .filter(([streamId, stream]) => {
-      const age = now - stream.startTime;
-
-      // Clean up streams with no activity:
-      // - Older than 2 minutes with no chunks received
-      // - Older than 3 hours (max interview duration)
-      // - No viewers + stale (no new data)
-
-      if (age > 3 * 60 * 60 * 1000) {
-        // Stream is over 3 hours old - definitely dead
-        console.log(`[Stream] Cleaning up old stream ${streamId} (age: ${Math.round(age/1000)}s)`);
-        liveStreams.delete(streamId);
-        return false;
-      }
-
-      // Mark when stream was last active (on first viewer connection)
-      if (!stream.lastActivityTime) {
-        stream.lastActivityTime = now;
-      }
-
-      const inactiveTime = now - stream.lastActivityTime;
-      if (inactiveTime > 2 * 60 * 1000 && stream.viewers.size === 0) {
-        // No activity for 2 minutes and no viewers - dead stream
-        console.log(`[Stream] Cleaning up inactive stream ${streamId}`);
-        liveStreams.delete(streamId);
-        return false;
-      }
-
-      return true;
-    })
-    .map(([streamId, stream]) => ({
+  const activeStreams = [];
+  for (const [streamId, stream] of Array.from(liveStreams.entries())) {
+    if (!isStreamLive(streamId, stream, now)) continue;
+    activeStreams.push({
       streamId,
       candidateName: stream.candidateName,
       subject: stream.subject,
       startTime: stream.startTime,
       duration: Math.floor((now - stream.startTime) / 1000),
-      viewerCount: stream.viewers.size,
+      viewerCount: activeViewerCount(stream, now),
       watchUrl: `/hr-watch/${streamId}`
-    }));
-
+    });
+  }
   res.json({ streams: activeStreams, count: activeStreams.length });
 });
 
@@ -1443,128 +1582,23 @@ const httpServer = app.listen(PORT, () => {
   console.log('📋  Press Ctrl+C to stop\n');
 });
 
-// Handle WebSocket upgrade errors
+// ─── WebSocket upgrade dispatch ───────────────────────────────────────────────
+// A WebSocketServer constructed with `server` + `path` claims EVERY upgrade
+// on that HTTP server and answers 400 to any path that isn't its own — so two
+// of them on one server reject each other's clients. That is what broke both
+// the HR watch page (a bare 400) and the STT relay (a 400 written onto an
+// already-upgraded socket, which the browser reported as "Invalid frame
+// header"). Per the ws docs, endpoints sharing one server must be `noServer`
+// instances behind a single upgrade handler that routes by pathname.
+const sttStreamWss = attachSttStreamRelay();
+
 httpServer.on('upgrade', (req, socket, head) => {
-  console.log(`[HTTP] Upgrade request: ${req.url}`);
-  if (!req.url.includes('/api/stt-stream') && !req.url.includes('/api/stream/watch')) {
-    console.log(`[HTTP] Rejecting upgrade for non-WebSocket path: ${req.url}`);
-    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-    socket.destroy();
-  }
-});
-
-attachSttStreamRelay(httpServer);
-
-// ─── WebSocket: Live Interview Stream (HR viewers) ────────────────────────────
-const liveStreamWss = new WebSocketServer({
-  server: httpServer,
-  path: '/api/stream/watch',
-  perMessageDeflate: false
-});
-
-liveStreamWss.on('connection', (ws, req) => {
-  // Extract stream ID from query string
-  const urlParams = new URLSearchParams(req.url.split('?')[1] || '');
-  const streamId = urlParams.get('id');
-
-  console.log(`[Stream] WebSocket connection attempt: streamId=${streamId}, url=${req.url}`);
-
-  if (!streamId || !liveStreams.has(streamId)) {
-    console.log(`[Stream] Invalid stream ID: ${streamId}`);
-    ws.close(1008, 'Invalid stream');
+  const { pathname } = new URL(req.url, 'http://localhost');
+  if (pathname === '/api/stt-stream') {
+    sttStreamWss.handleUpgrade(req, socket, head, ws => sttStreamWss.emit('connection', ws, req));
     return;
   }
-
-  const stream = liveStreams.get(streamId);
-  stream.viewers.add(ws);
-
-  console.log(`[Stream] Viewer connected to ${streamId}`);
-
-  // Send metadata
-  ws.send(JSON.stringify({
-    type: 'metadata',
-    candidateName: stream.candidateName,
-    subject: stream.subject,
-    startTime: stream.startTime
-  }));
-
-  // Send buffered chunks
-  const buffer = streamChunkBuffers.get(streamId) || [];
-  buffer.forEach(chunk => {
-    if (ws.readyState === ws.OPEN) {
-      const sizeBuffer = Buffer.alloc(4);
-      sizeBuffer.writeUInt32BE(chunk.length, 0);
-      ws.send(Buffer.concat([sizeBuffer, chunk]));
-    }
-  });
-
-  ws.on('close', () => {
-    stream.viewers.delete(ws);
-    console.log(`[Stream] Viewer disconnected from ${streamId}`);
-  });
-
-  ws.on('error', (err) => {
-    console.error(`[Stream] WebSocket error:`, err.message);
-    stream.viewers.delete(ws);
-  });
+  socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+  socket.destroy();
 });
 
-liveStreamWss.on('error', (err) => {
-  console.error('[Stream] WebSocket Server error:', err.message);
-});
-
-// Stream chunk buffer for each viewer (holds recent chunks for new connections)
-const streamChunkBuffers = new Map(); // streamId -> [chunks]
-const MAX_BUFFER_SIZE = 50; // Keep last 50 chunks (~5 minutes at 10s intervals)
-
-// Update chunk buffer when chunks arrive
-app.post('/api/stream/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
-  const streamId = String(req.query.id || '');
-  const stream = liveStreams.get(streamId);
-
-  if (!stream) {
-    return res.status(404).json({ error: 'Stream not found' });
-  }
-
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    return res.status(400).json({ error: 'Empty chunk' });
-  }
-
-  // Update last activity time - stream is alive
-  stream.lastActivityTime = Date.now();
-
-  // Store chunk in buffer for new viewers
-  if (!streamChunkBuffers.has(streamId)) {
-    streamChunkBuffers.set(streamId, []);
-  }
-  const buffer = streamChunkBuffers.get(streamId);
-  buffer.push(req.body);
-  if (buffer.length > MAX_BUFFER_SIZE) {
-    buffer.shift();
-  }
-
-  // Broadcast to all connected HR viewers
-  const sizeBuffer = Buffer.alloc(4);
-  sizeBuffer.writeUInt32BE(req.body.length, 0);
-  const chunkMessage = Buffer.concat([sizeBuffer, req.body]);
-
-  const viewers = Array.from(stream.viewers);
-  const deadViewers = [];
-
-  viewers.forEach(ws => {
-    if (ws && ws.readyState === ws.OPEN) {
-      try {
-        ws.send(chunkMessage);
-      } catch (e) {
-        deadViewers.push(ws);
-      }
-    } else {
-      deadViewers.push(ws);
-    }
-  });
-
-  // Clean up dead connections
-  deadViewers.forEach(ws => stream.viewers.delete(ws));
-
-  res.json({ success: true, viewerCount: stream.viewers.size });
-});

@@ -203,13 +203,19 @@
     const btnText = document.getElementById('btnText');
     const rememberMe = document.getElementById('rememberMe');
 
+    // Where to go once logged in. The live-watch page sends HR here with
+    // ?next=/hr-watch/<id> when their session has expired; only same-origin
+    // paths are honoured.
+    const nextParam = new URLSearchParams(window.location.search).get('next') || '';
+    const nextUrl = /^\/(?!\/)/.test(nextParam) ? nextParam : '/hr-dashboard';
+
     // Check if already logged in
     async function checkSession() {
       try {
         const res = await fetch('/api/hr/session');
         const data = await res.json();
         if (data.isHR) {
-          window.location.href = '/hr-dashboard';
+          window.location.href = nextUrl;
         }
       } catch (e) {
         console.log('Session check failed (non-fatal)');
@@ -272,7 +278,7 @@
 
         // Redirect to dashboard after brief delay
         setTimeout(() => {
-          window.location.href = '/hr-dashboard';
+          window.location.href = nextUrl;
         }, 500);
       } catch (error) {
         console.error('Login error:', error);

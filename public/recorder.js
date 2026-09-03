@@ -1,8 +1,11 @@
 /**
  * Recorder — records the whole interview (candidate's camera video + mic
- * audio) via MediaRecorder and streams it to the server in ~10-second chunks
+ * audio) via MediaRecorder and streams it to the server in short chunks
  * while the interview is running, so nothing large ever sits in memory and a
  * mid-interview crash still leaves everything recorded up to that point.
+ * The HR dashboard's live view reads this same growing file as it's written
+ * (see /api/stream/data in server.js), so CHUNK_MS is also the floor on how
+ * far behind real time HR sees the candidate.
  * Container is webm everywhere except iOS Safari, which has no webm
  * MediaRecorder support and records mp4 instead (see start()/recordingExt).
  *
@@ -20,22 +23,19 @@ const Recorder = {
   recordingExt:  'webm', // actual container in use — see start(); iOS Safari records mp4
   audioStream:   null,
   failed:        false,
-  streamId:      null, // for HR live streaming
   // Chunks must be appended server-side in capture order, so uploads are
   // chained on a single promise queue rather than fired in parallel.
   uploadQueue:   Promise.resolve(),
 
-  CHUNK_MS: 10000,
+  CHUNK_MS: 3000,
 
   /**
    * Starts recording using the already-granted camera stream's video track
    * plus a freshly-requested mic track. Returns true if recording started.
    * @param {MediaStream} cameraStream
-   * @param {string} streamId - optional HR live stream ID for broadcasting chunks
    */
-  async start(cameraStream, streamId = null) {
+  async start(cameraStream) {
     if (this.mediaRecorder || !window.MediaRecorder || !cameraStream) return false;
-    this.streamId = streamId;
 
     try {
       if (cameraStream.getAudioTracks().length > 0) {
@@ -109,15 +109,6 @@ const Recorder = {
         console.warn('Recording upload failed — recording abandoned:', e);
         this.failed = true;
       });
-
-    // Broadcast chunk to HR live stream (fire-and-forget, doesn't block recording)
-    if (this.streamId) {
-      fetch(`/api/stream/chunk?id=${this.streamId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: blob
-      }).catch(e => console.warn('Stream broadcast failed (non-fatal):', e));
-    }
   },
 
   /**
