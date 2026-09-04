@@ -166,6 +166,10 @@ const App = {
     endedForMisconduct: false, // true only if the interview was actually terminated for conduct —
                                 // a candidate who was warned but behaved afterward is NOT flagged
     quitting:      false,
+    sessionId:       null, // unique per interview attempt — lets the server dedupe the normal
+                            // completion report against the beforeunload safety-net beacon that
+                            // fires right after it (see _setupUnloadHandler/generateReport)
+    reportSubmitted: false,
     resumeAnalyzing: false,
     resumeAnalyzed:  false,
     resumeSummary:   null, // summaryText string sent to the AI as resume context
@@ -185,9 +189,15 @@ const App = {
   // Cleanup on page unload - save report and end stream even if user closes tab/navigates away
   _setupUnloadHandler() {
     window.addEventListener('beforeunload', () => {
-      // Save partial report if interview was in progress
-      if (this.s.teacherName && !this.s.quitting && this.s.stageIndex > 0) {
+      // Save partial report if interview was in progress. Guarded by
+      // reportSubmitted too: generateReport() already sent the real (possibly
+      // final) report for this sessionId before this handler can run on a
+      // normal completion — without this check every completed interview
+      // would additionally submit a spurious "interrupted" duplicate the
+      // instant the candidate closes the thank-you tab.
+      if (this.s.teacherName && !this.s.quitting && !this.s.reportSubmitted && this.s.stageIndex > 0) {
         const reportData = {
+          sessionId: this.s.sessionId,
           transcript: ReportManager.getPlainTranscript(),
           teacherName: this.s.teacherName,
           subject: this.s.subject,
@@ -338,6 +348,7 @@ const App = {
     this.s.subject     = subject;
     this.s.spokenLang  = spokenLang;
     this.s.startDate   = new Date().toLocaleString('en-IN');
+    this.s.sessionId   = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
     startBtn.disabled = true;
     startBtn.textContent = 'Initialising…';
@@ -1206,8 +1217,11 @@ const App = {
       if (this.s.quitting) return; // candidate quit while evaluation was in flight
       this.s.problemScores.push(ev.score ?? 5);
       // Kept as a single number for backward compatibility with the report
-      // payload — the average across all rounds so far.
-      this.s.problemScore = Math.round(this.s.problemScores.reduce((a, b) => a + b, 0) / this.s.problemScores.length);
+      // payload — the average across all rounds so far. Rounded to one decimal
+      // place rather than a whole number so it keeps the precision of the
+      // per-round scores instead of flattening real differences between
+      // candidates into the same integer.
+      this.s.problemScore = Math.round((this.s.problemScores.reduce((a, b) => a + b, 0) / this.s.problemScores.length) * 10) / 10;
 
       // A wrong round (including submitting nothing) extends the streak; any
       // correct round resets it and counts toward the accuracy checkpoint below.
@@ -1421,6 +1435,7 @@ const App = {
 
     try {
       const reportData = {
+        sessionId:       this.s.sessionId,
         transcript:      ReportManager.getPlainTranscript(),
         teacherName:     this.s.teacherName,
         subject:         this.s.subject,
@@ -1450,6 +1465,10 @@ const App = {
 
       // Clear recovery data on successful submission
       RecoveryManager.clearCheckpoint();
+      // A real submission for this sessionId is now on the server, so the
+      // beforeunload safety net (which would otherwise fire an interrupted
+      // duplicate the moment this tab closes) can stand down.
+      this.s.reportSubmitted = true;
       if (!interrupted) this.showScreen('report');
     } catch (e) {
       console.error('[Report] Failed to submit:', e);

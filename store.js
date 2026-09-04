@@ -27,8 +27,31 @@ if (!process.env.PERSISTENT_DATA_DIR) {
 
 const ID_RE = /^[0-9a-f-]+$/i;
 
-function saveReport({ teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false }) {
-  const id = crypto.randomUUID();
+// A single interview attempt can legitimately submit a report more than once
+// — most commonly the normal-completion beacon from generateReport() racing
+// the beforeunload safety-net beacon fired when the candidate closes the
+// resulting "thank you" tab, but also any retried fetch fallback. Every
+// submission for one attempt carries the same client-generated sessionId, so
+// rather than minting a fresh file (and a duplicate admin-dashboard row)
+// every time, this upserts: the file is named after the sessionId, and a
+// final (non-interrupted) report already on disk is never clobbered by a
+// late-arriving interrupted duplicate for that same session.
+function saveReport({ sessionId = null, teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false }) {
+  const id = (typeof sessionId === 'string' && ID_RE.test(sessionId)) ? sessionId : crypto.randomUUID();
+  const file = path.join(DATA_DIR, `${id}.json`);
+
+  if (fs.existsSync(file)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (existing.interrupted === false && interrupted) {
+        console.log(`[store] Skipped duplicate interrupted report for ${id} (${teacherName}) — final report already on disk`);
+        return id;
+      }
+    } catch {
+      // Corrupt existing file — fall through and overwrite it below.
+    }
+  }
+
   const record = {
     id,
     createdAt: new Date().toISOString(),
@@ -43,7 +66,7 @@ function saveReport({ teacherName, subject, problemScore, transcript, report, re
     recordingExt,
     interrupted // true if interview was interrupted/incomplete
   };
-  fs.writeFileSync(path.join(DATA_DIR, `${id}.json`), JSON.stringify(record, null, 2));
+  fs.writeFileSync(file, JSON.stringify(record, null, 2));
   console.log(`[store] Saved report ${id} for ${teacherName} ${interrupted ? '(INTERRUPTED)' : ''}`);
   return id;
 }

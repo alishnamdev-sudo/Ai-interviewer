@@ -8,6 +8,11 @@ function escapeHtml(str) {
   }[c]));
 }
 
+function fmtScore(score) {
+  const n = Number(score);
+  return Number.isFinite(n) ? n.toFixed(1) : '—';
+}
+
 function getScoreColor(score) {
   if (score >= 80) return '#10b981';
   if (score >= 65) return '#4f86f7';
@@ -145,7 +150,7 @@ const Admin = {
           </td>
           <td class="clickable-cell">${escapeHtml(r.subject)}</td>
           <td class="clickable-cell"><small>${date}${stageText}</small></td>
-          <td class="clickable-cell" style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore ?? '—'}</td>
+          <td class="clickable-cell" style="color:${getScoreColor(r.overallScore || 0)}; font-weight:700;">${r.overallScore != null ? fmtScore(r.overallScore) : '—'}</td>
           <td class="clickable-cell"><span class="rec-badge" style="background:${recStyle.bg};border-color:${recStyle.border};color:${recStyle.color}">${escapeHtml(rec)}</span></td>
           <td class="action-cell" onclick="event.stopPropagation()"><button class="btn-delete" data-id="${escapeHtml(r.id)}" title="Delete this report">🗑️ Delete</button></td>
         </tr>`;
@@ -193,7 +198,7 @@ const Admin = {
       <div class="cat-card">
         <div class="cat-header">
           <span class="cat-name">${escapeHtml(cat.name)}</span>
-          <span class="cat-score" style="color:${getScoreColor(cat.score)}">${cat.score}%</span>
+          <span class="cat-score" style="color:${getScoreColor(cat.score)}">${fmtScore(cat.score)}%</span>
         </div>
         <div class="cat-bar-track">
           <div class="cat-bar-fill" style="width:${cat.score}%;background:${getScoreColor(cat.score)}"></div>
@@ -236,11 +241,11 @@ const Admin = {
               stroke-linecap="round" transform="rotate(-90 60 60)"/>
           </svg>
           <div class="score-inner">
-            <span class="score-big">${overallScore}</span>
+            <span class="score-big">${fmtScore(overallScore)}</span>
             <span class="score-slash">/100</span>
           </div>
           <p class="score-label">Overall Score</p>
-          <p class="prob-pill">Problem Solving: <strong>${problemScore}/10</strong></p>
+          <p class="prob-pill">Problem Solving: <strong>${fmtScore(problemScore)}/10</strong></p>
         </div>
 
         <div class="summary-card">

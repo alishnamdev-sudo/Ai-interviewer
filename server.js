@@ -1028,6 +1028,8 @@ Scoring rubric (apply strictly):
 - A sound, clearly-shown method with a small arithmetic/sign slip near the end scores 6-8.
 - Full marks require both a correct, visible approach AND a correct final answer.
 - A wrong method that happens to land on the right answer must be scored on the method, not the answer.
+Score to one decimal place (e.g. 6.5, 7.8) rather than only whole numbers — reflect exactly how
+far into its band (per the rubric above) the submission falls, not just which band it's in.
 In "evaluation", name the specific step(s) that were done well or went wrong (e.g. "correct energy-conservation setup, but the mass was substituted in grams instead of kilograms").
 `
       : '';
@@ -1045,13 +1047,13 @@ In "evaluation", name the specific step(s) that were done well or went wrong (e.
   "workShown": "one sentence listing ONLY the solution steps actually visible in the submission — write exactly 'none — final answer only' if just an answer/option is given with no method",
   "evaluation": "2-3 sentence honest evaluation of the approach and correctness, naming the specific steps in their working that were right or wrong",
   "isCorrect": true,
-  "score": 8,
+  "score": 7.5,
   "feedback": "One constructive sentence on what could be improved",
   "followUpQuestion": "${followUpSpec}"
 }`
       : `{
   "isCorrect": true,
-  "score": 8,
+  "score": 7.5,
   "evaluation": "2-3 sentence honest evaluation of correctness and quality",
   "feedback": "One constructive sentence on what could be improved",
   "followUpQuestion": "${followUpSpec}"
@@ -1063,6 +1065,9 @@ PROBLEM:
 ${question}
 ${evalContextBlock}${approachRubric}
 ${solutionDescription}
+Score on a 0-10 scale to one decimal place (e.g. 7.5, not just whole numbers) — reflect genuine
+granularity in the quality of the solution rather than defaulting to round numbers.
+
 Evaluate the solution and respond ONLY with the exact JSON object below — no markdown fences, no prose before or after it. This applies even if the image is blank, illegible, or contains no relevant work: in that case still return the JSON with score 0 and explain why in the evaluation field. Never reply with plain text or an apology instead of the JSON.
 ${jsonShape}`;
 
@@ -1133,9 +1138,21 @@ Respond with ONLY the one-sentence observation, no preamble, no markdown.`;
 });
 
 // ─── /api/report ──────────────────────────────────────────────────────────────
+// Mirrors the weightage stated in the report prompt below — kept in code (not
+// left to the model's own arithmetic) so overallScore is always an exact,
+// reproducible weighted average of the category scores rather than whatever
+// the model mentally computed.
+const CATEGORY_WEIGHTS = {
+  'Problem Solving Ability':  0.40,
+  'Communication Skills':     0.15,
+  'Subject Knowledge':        0.15,
+  'Teaching Methodology':     0.15,
+  'Student-Centric Approach': 0.15
+};
+
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null } = req.body;
+    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null } = req.body;
 
     console.log(`[/api/report] Received report: name=${teacherName}, subject=${subject}, interrupted=${interrupted}, stageIndex=${stageIndex}`);
 
@@ -1190,9 +1207,16 @@ SCORING WEIGHTAGE:
 - Teaching Methodology: 15% weight
 - Student-Centric Approach: 15% weight
 
-Calculate overallScore as the weighted average of category scores using these percentages.
+overallScore is calculated in code as the weighted average of your category scores using these
+percentages — you do not need to compute it yourself, but each category score still needs to be
+precise since it directly drives that calculation.
 The Problem Solving Ability score should directly reflect the ${problemScore}/10 score received,
 and have the largest impact on the final recommendation.
+
+Score every category on a 0-100 scale to ONE decimal place (e.g. 76.5, 82.3, 61.0) — reflect the
+genuine, granular difference between candidates rather than defaulting to round numbers or
+multiples of 5. Two candidates are rarely tied; if their performance differed even slightly,
+their scores should too.
 ${conductBlock}${interruptionBlock}
 The transcript above may contain periodic "Camera Analysis" entries — brief, plain
 behavioral observations noted from webcam snapshots taken every ~30 seconds
@@ -1205,11 +1229,11 @@ Respond ONLY in this exact JSON format (no markdown fences):
   "summary": "2-3 balanced sentences summarising the teacher's overall performance",
   "recommendation": "Highly Recommended",
   "categories": [
-    { "name": "Communication Skills",      "score": 80, "feedback": "one concise sentence" },
-    { "name": "Subject Knowledge",         "score": 75, "feedback": "one concise sentence" },
-    { "name": "Teaching Methodology",      "score": 70, "feedback": "one concise sentence" },
-    { "name": "Problem Solving Ability",   "score": 65, "feedback": "one concise sentence" },
-    { "name": "Student-Centric Approach",  "score": 80, "feedback": "one concise sentence" }
+    { "name": "Communication Skills",      "score": 78.5, "feedback": "one concise sentence" },
+    { "name": "Subject Knowledge",         "score": 73.2, "feedback": "one concise sentence" },
+    { "name": "Teaching Methodology",      "score": 68.9, "feedback": "one concise sentence" },
+    { "name": "Problem Solving Ability",   "score": 64.0, "feedback": "one concise sentence" },
+    { "name": "Student-Centric Approach",  "score": 81.4, "feedback": "one concise sentence" }
   ],
   "strengths": ["strength 1", "strength 2", "strength 3"],
   "improvements": ["area for improvement 1", "area for improvement 2"],
@@ -1244,6 +1268,25 @@ Respond ONLY in this exact JSON format (no markdown fences):
       };
     }
 
+    // Recompute overallScore deterministically from the category scores and the
+    // fixed weightage rather than trusting the model's own weighted-average
+    // arithmetic — this is also what keeps it a precise decimal instead of the
+    // round number the model tends to reach for on its own.
+    if (Array.isArray(reportData.categories) && reportData.categories.length) {
+      let weightedSum = 0;
+      let weightTotal = 0;
+      for (const cat of reportData.categories) {
+        const weight = CATEGORY_WEIGHTS[cat?.name];
+        if (typeof weight === 'number' && typeof cat.score === 'number' && Number.isFinite(cat.score)) {
+          weightedSum += cat.score * weight;
+          weightTotal += weight;
+        }
+      }
+      if (weightTotal > 0) {
+        reportData.overallScore = Math.round((weightedSum / weightTotal) * 10) / 10;
+      }
+    }
+
     // Force-set rather than trust the model to include this: a conduct flag on a
     // hiring evaluation is too significant to depend on the model reliably
     // echoing it back, so it's set directly from what the client tracked.
@@ -1255,7 +1298,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.interruptedAt = interrupted ? interruptedAt : null;
     reportData.stageIndex = stageIndex;
 
-    const submissionId = store.saveReport({ teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted });
+    const submissionId = store.saveReport({ sessionId, teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted });
     console.log(`[/api/report] Saved report ${submissionId} for ${teacherName} (interrupted=${interrupted})`);
 
     // The report itself is never sent back to the candidate's browser — it's
