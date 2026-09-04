@@ -11,7 +11,7 @@ services:
     disk:
       name: interview-data
       mountPath: /var/data
-      sizeGB: 1
+      sizeGB: 50
     envVars:
       - key: NODE_ENV
         value: production
@@ -40,9 +40,11 @@ services:
 # Environment -> add PERSISTENT_DATA_DIR matching the mount path.
 #
 # Disk cost: $7/mo minimum (Starter instance) + $0.25/GB-month for the disk
-# itself. Reports are tiny (~15KB each) so their share is negligible; video
-# recordings (~150MB/interview) are what actually grows this over time —
-# resize sizeGB upward later if needed (grows live, no downtime; cannot
-# shrink). See the admin cost notes from the persistence discussion for the
-# cheaper-long-term alternative (hosted DB + object storage) if this disk
-# cost becomes worth avoiding at higher volume.
+# itself — at 50GB that's $12.50/mo for the disk alone. Reports are tiny
+# (~15KB each) so their share is negligible; video recordings (~150MB/
+# interview) are what actually grows this over time — resize sizeGB upward
+# later if needed (grows live, no downtime; cannot shrink, which is also why
+# this must stay >= whatever the live Render disk is actually provisioned at,
+# or Blueprint sync will reject the change). See the admin cost notes from
+# the persistence discussion for the cheaper-long-term alternative (hosted DB
+# + object storage) if this disk cost becomes worth avoiding at higher volume.
