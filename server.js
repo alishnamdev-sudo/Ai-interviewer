@@ -4,6 +4,7 @@ const session = require('express-session');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { WebSocketServer, WebSocket: SarvamWs } = require('ws');
 const WordExtractor = require('word-extractor');
@@ -816,6 +817,86 @@ function findRecordingFile(id) {
   return null;
 }
 
+// A recording file on disk is just raw MediaRecorder chunks appended one after
+// another as they streamed in (see /api/recording/chunk) — playable from the
+// start, but no muxer ever finalized the container, so it has no Duration and
+// no seek index (Cues for webm, a proper moov atom for mp4). That's why the
+// admin's <video> reports an infinite/unknown duration and can seek only into
+// whatever range the browser has already buffered — scrubbing or jumping to a
+// chapter near the end fails outright. Once a recording is confirmed complete
+// (Recorder.stop() has flushed every chunk — see the /api/report handler),
+// stream-copy remuxing it with ffmpeg rewrites the container with real
+// duration/seek metadata, with no re-encode and no quality loss. Best-effort
+// and fire-and-forget: a missing/failing ffmpeg must never affect report
+// submission, and the original file is left untouched until a full,
+// non-empty replacement is ready.
+let ffmpegPath = null;
+try { ffmpegPath = require('ffmpeg-static'); } catch { /* optional dependency missing — remux disabled */ }
+
+// A `<file>.remuxed` marker is written next to a recording once it's been
+// fixed, so the startup backfill sweep below never reprocesses the same
+// (potentially large) file again on a later restart/deploy.
+function remuxRecordingForSeeking(file, ext) {
+  if (!ffmpegPath) return Promise.resolve();
+  const marker = `${file}.remuxed`;
+  // Uniquely named per call (not just per file, to survive a duplicate
+  // /api/report submission for the same recording racing two concurrent
+  // ffmpeg runs — see store.js's upsert notes) AND ending in the real
+  // extension, since ffmpeg infers the output container from the filename
+  // and refuses anything it doesn't recognize (e.g. a trailing ".tmp").
+  const tmpFile = `${file}.${crypto.randomUUID()}.${ext}`;
+  const args = ext === 'mp4'
+    ? ['-y', '-i', file, '-c', 'copy', '-movflags', 'faststart', tmpFile]
+    : ['-y', '-i', file, '-c', 'copy', tmpFile];
+
+  return new Promise(resolve => {
+    execFile(ffmpegPath, args, { timeout: 120000 }, (err) => {
+      if (err) {
+        console.warn(`[remux] ffmpeg failed for ${path.basename(file)}: ${err.message}`);
+        fs.rm(tmpFile, { force: true }, () => resolve());
+        return;
+      }
+      fs.stat(tmpFile, (statErr, stats) => {
+        if (statErr || !stats.size) {
+          console.warn(`[remux] Skipped replacing ${path.basename(file)} — ffmpeg produced no output`);
+          fs.rm(tmpFile, { force: true }, () => resolve());
+          return;
+        }
+        fs.rename(tmpFile, file, (renameErr) => {
+          if (renameErr) {
+            console.warn(`[remux] Failed to finalize ${path.basename(file)}: ${renameErr.message}`);
+            resolve();
+            return;
+          }
+          console.log(`[remux] Fixed seek metadata for ${path.basename(file)}`);
+          fs.writeFile(marker, '', () => resolve());
+        });
+      });
+    });
+  });
+}
+
+// One-time backfill for recordings captured before this remux step existed —
+// otherwise they'd be stuck with the unseekable/infinite-duration problem
+// forever. Runs sequentially (not all at once) so it doesn't spike CPU/memory
+// competing with live traffic on a modest instance; harmless to interrupt
+// since already-fixed files are skipped via their `.remuxed` marker next time.
+async function backfillRemuxExistingRecordings() {
+  if (!ffmpegPath) return;
+  let files;
+  try { files = fs.readdirSync(RECORDINGS_DIR); } catch { return; }
+  const markers = new Set(files.filter(f => f.endsWith('.remuxed')));
+  const targets = files.filter(f => RECORDING_EXTS.includes(f.split('.').pop()) && !markers.has(`${f}.remuxed`));
+  if (targets.length === 0) return;
+
+  console.log(`[remux] Backfilling seek metadata for ${targets.length} existing recording(s)...`);
+  for (const f of targets) {
+    await remuxRecordingForSeeking(path.join(RECORDINGS_DIR, f), f.split('.').pop());
+  }
+  console.log('[remux] Backfill complete.');
+}
+backfillRemuxExistingRecordings();
+
 app.post('/api/recording/chunk', express.raw({ type: 'application/octet-stream', limit: '25mb' }), (req, res) => {
   const id = String(req.query.id || '');
   if (!RECORDING_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid recording id' });
@@ -1173,6 +1254,11 @@ app.post('/api/report', async (req, res) => {
       ? findRecordingFile(recordingId) : null;
     const safeRecordingId = recordingFile ? recordingId : null;
     const recordingExt = recordingFile ? path.extname(recordingFile).slice(1) : null;
+
+    // Fire-and-forget: fixes the recording's seek metadata in the background so
+    // admins can scrub/jump anywhere in it (see remuxRecordingForSeeking above)
+    // without making the candidate's report submission wait on it.
+    if (recordingFile) remuxRecordingForSeeking(recordingFile, recordingExt);
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
