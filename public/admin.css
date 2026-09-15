@@ -120,6 +120,8 @@ body { overflow-y: auto; }
   width: 100%;
   padding-left: 36px;
 }
+.filters-bar select { color-scheme: dark; }
+.filters-bar select option { background: #1e293b; color: var(--text-primary); }
 .filters-bar input:focus,
 .filters-bar select:focus { border-color: var(--blue); }
 .filter-date-sep { color: var(--text-muted); font-size: 13px; }
