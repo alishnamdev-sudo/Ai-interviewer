@@ -1179,6 +1179,34 @@ input, select, textarea { font-family: inherit; }
 .transcript-header h4 { font-size: 14px; font-weight: 700; }
 .tr-actions { display: flex; gap: 10px; }
 
+.chapter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 20px 20px;
+}
+.chapter-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border-bright);
+  border-radius: 99px;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.chapter-chip:hover { background: rgba(79,134,247,0.12); border-color: rgba(79,134,247,0.4); }
+.chapter-chip-time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: #4f86f7;
+}
+.chapter-chip-label { color: var(--text-muted); }
+
 .btn-secondary {
   padding: 8px 14px;
   background: rgba(255,255,255,0.06);

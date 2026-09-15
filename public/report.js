@@ -5,6 +5,29 @@
  */
 const ReportManager = (() => {
   const entries = []; // { speaker, text, stage, time }
+  const chapters = []; // { label, seconds } — one marker per interview stage, used by
+                        // the admin dashboard to let a reviewer jump straight to a
+                        // section of the recording instead of scrubbing/waiting for it
+                        // to buffer.
+  let recordingStartedAt = null;
+
+  // Called right after MediaRecorder actually starts (see Recorder.start() in app.js)
+  // so chapter offsets line up with the recording's own timeline, not the interview's.
+  function markRecordingStart() {
+    recordingStartedAt = Date.now();
+  }
+
+  // One marker per stage — safe to call more than once for the same label (e.g. a
+  // stage re-entered on recovery), only the first call sticks.
+  function markChapter(label) {
+    if (!label || chapters.some(c => c.label === label)) return;
+    const seconds = recordingStartedAt ? Math.max(0, Math.round((Date.now() - recordingStartedAt) / 1000)) : 0;
+    chapters.push({ label, seconds });
+  }
+
+  function getChapters() {
+    return chapters.slice();
+  }
 
   function addEntry(speaker, text, stage) {
     entries.push({
@@ -28,5 +51,5 @@ const ReportManager = (() => {
     }).join('');
   }
 
-  return { addEntry, getPlainTranscript };
+  return { addEntry, getPlainTranscript, markRecordingStart, markChapter, getChapters };
 })();

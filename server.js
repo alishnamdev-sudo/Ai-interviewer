@@ -1152,7 +1152,17 @@ const CATEGORY_WEIGHTS = {
 
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null } = req.body;
+    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null, chapters = null } = req.body;
+
+    // Client-reported video chapter markers (interview stage -> elapsed seconds in the
+    // recording) — best-effort and only ever used to render seek links in the admin
+    // dashboard, so anything malformed is just dropped rather than rejected.
+    const safeChapters = Array.isArray(chapters)
+      ? chapters
+          .filter(c => c && typeof c.label === 'string' && Number.isFinite(c.seconds))
+          .slice(0, 20)
+          .map(c => ({ label: c.label.slice(0, 60), seconds: Math.max(0, Math.round(c.seconds)) }))
+      : [];
 
     console.log(`[/api/report] Received report: name=${teacherName}, subject=${subject}, interrupted=${interrupted}, stageIndex=${stageIndex}`);
 
@@ -1298,7 +1308,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.interruptedAt = interrupted ? interruptedAt : null;
     reportData.stageIndex = stageIndex;
 
-    const submissionId = store.saveReport({ sessionId, teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted });
+    const submissionId = store.saveReport({ sessionId, teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted, chapters: safeChapters });
     console.log(`[/api/report] Saved report ${submissionId} for ${teacherName} (interrupted=${interrupted})`);
 
     // The report itself is never sent back to the candidate's browser — it's

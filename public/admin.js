@@ -13,6 +13,13 @@ function fmtScore(score) {
   return Number.isFinite(n) ? n.toFixed(1) : '—';
 }
 
+function fmtTime(totalSeconds) {
+  const s = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
 function getScoreColor(score) {
   if (score >= 80) return '#10b981';
   if (score >= 65) return '#4f86f7';
@@ -183,9 +190,16 @@ const Admin = {
     this.renderReport(record);
   },
 
+  seekVideo(seconds) {
+    const video = document.getElementById('report-video');
+    if (!video) return;
+    video.currentTime = seconds;
+    video.play().catch(() => {}); // autoplay can be blocked; seeking still worked either way
+  },
+
   renderReport(record) {
     const container = document.getElementById('report-container');
-    const { teacherName, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, report = {} } = record;
+    const { teacherName, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {} } = record;
     const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
@@ -276,10 +290,18 @@ const Admin = {
           <a class="btn-secondary" href="/api/admin/recordings/${encodeURIComponent(recordingId)}"
              download="interview-${encodeURIComponent(teacherName || 'candidate')}.${recordingExt || 'webm'}">⬇ Download Recording</a>
         </div>
-        <video controls preload="metadata"
+        <video id="report-video" controls preload="metadata"
                src="/api/admin/recordings/${encodeURIComponent(recordingId)}"
                style="width:100%;max-height:420px;border-radius:12px;background:#000;margin-top:10px;">
         </video>
+        ${chapters.length ? `
+        <div class="chapter-chips">
+          ${chapters.map(c => `
+            <button type="button" class="chapter-chip" onclick="Admin.seekVideo(${Number(c.seconds) || 0})">
+              <span class="chapter-chip-time">${fmtTime(c.seconds)}</span>
+              <span class="chapter-chip-label">${escapeHtml(c.label)}</span>
+            </button>`).join('')}
+        </div>` : ''}
       </div>` : ''}
 
       <div class="transcript-section">

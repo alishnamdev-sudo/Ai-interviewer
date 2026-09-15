@@ -388,6 +388,7 @@ const App = {
     // Interview" click's permission context. Best-effort: a denied mic or
     // unsupported browser just means no recording — never a blocked interview.
     const recording = await Recorder.start(this.s.cameraStream);
+    if (recording) ReportManager.markRecordingStart();
 
     // Register the recording as a live stream so HR can watch it from the
     // dashboard while it's being written (the live view reads the very file
@@ -687,6 +688,7 @@ const App = {
   // ── Stage Management ───────────────────────────────────────────────────────
   async beginStage() {
     const stage = this.stage;
+    ReportManager.markChapter(STAGE_LABELS[stage]);
 
     if (stage === 'PROBLEM_SOLVE') {
       await this.launchProblemSolving();
@@ -1386,6 +1388,7 @@ const App = {
   async _concludeProblemSolving() {
     if (this.s.quitting) return;
     this.s.stageIndex = STAGES.indexOf('WRAP_UP');
+    ReportManager.markChapter(STAGE_LABELS.WRAP_UP); // WRAP_UP skips beginStage() (see STAGES comment above), so it needs its own marker
     this.showScreen('interview');
     this.updateStageUI();
 
@@ -1437,6 +1440,7 @@ const App = {
       const reportData = {
         sessionId:       this.s.sessionId,
         transcript:      ReportManager.getPlainTranscript(),
+        chapters:        ReportManager.getChapters(),
         teacherName:     this.s.teacherName,
         subject:         this.s.subject,
         problemScore:    this.s.problemScore,
