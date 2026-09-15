@@ -38,15 +38,31 @@ function getRecommendationStyle(rec) {
 }
 
 const Admin = {
+  _allReports: [], // full unfiltered list from the last /api/admin/reports fetch
+
   async init() {
     document.getElementById('login-form').addEventListener('submit', e => { e.preventDefault(); this.login(); });
     document.getElementById('logout-btn').addEventListener('click', () => this.logout());
     document.getElementById('back-link').addEventListener('click', () => this.showList());
 
+    document.getElementById('search-input').addEventListener('input', () => this.renderReports());
+    document.getElementById('subject-filter').addEventListener('change', () => this.renderReports());
+    document.getElementById('date-from').addEventListener('change', () => this.renderReports());
+    document.getElementById('date-to').addEventListener('change', () => this.renderReports());
+    document.getElementById('clear-filters-btn').addEventListener('click', () => this.clearFilters());
+
     const res = await fetch('/api/admin/session');
     const { isAdmin } = await res.json();
     if (isAdmin) this.showDashboard();
     else this.showLogin();
+  },
+
+  clearFilters() {
+    document.getElementById('search-input').value = '';
+    document.getElementById('subject-filter').value = '';
+    document.getElementById('date-from').value = '';
+    document.getElementById('date-to').value = '';
+    this.renderReports();
   },
 
   showLogin() {
@@ -130,16 +146,55 @@ const Admin = {
     const res = await fetch('/api/admin/reports');
     if (res.status === 401) { this.showLogin(); return; }
 
-    const reports = await res.json();
+    this._allReports = await res.json();
+    this.renderReports();
+  },
+
+  // Applies the search box + subject/date filters to the last-fetched list and
+  // re-renders the table. Called on load and on every filter control change —
+  // the full list already lives in memory (see loadReports), so this stays a
+  // pure client-side filter rather than a server round-trip.
+  renderReports() {
     const tbody = document.getElementById('reports-tbody');
     const empty = document.getElementById('reports-empty');
+    const noMatch = document.getElementById('reports-no-match');
 
-    if (!reports.length) {
+    if (!this._allReports.length) {
       tbody.innerHTML = '';
       empty.classList.remove('hidden');
+      noMatch.classList.add('hidden');
       return;
     }
     empty.classList.add('hidden');
+
+    const query = document.getElementById('search-input').value.trim().toLowerCase();
+    const subjectFilter = document.getElementById('subject-filter').value;
+    const dateFromStr = document.getElementById('date-from').value; // yyyy-mm-dd or ''
+    const dateToStr = document.getElementById('date-to').value;
+    const dateFrom = dateFromStr ? new Date(`${dateFromStr}T00:00:00`) : null;
+    const dateTo = dateToStr ? new Date(`${dateToStr}T23:59:59.999`) : null;
+
+    const reports = this._allReports.filter(r => {
+      if (subjectFilter && r.subject !== subjectFilter) return false;
+
+      const created = new Date(r.createdAt);
+      if (dateFrom && created < dateFrom) return false;
+      if (dateTo && created > dateTo) return false;
+
+      if (query) {
+        const haystack = [r.teacherName, r.candidatePhone, r.candidateEmail].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+
+      return true;
+    });
+
+    if (!reports.length) {
+      tbody.innerHTML = '';
+      noMatch.classList.remove('hidden');
+      return;
+    }
+    noMatch.classList.add('hidden');
 
     tbody.innerHTML = reports.map(r => {
       const rec = r.recommendation || '—';
@@ -148,12 +203,14 @@ const Admin = {
       const interruptedBadge = r.interrupted ? '<span class="interrupted-badge" title="Interview was interrupted (refresh, network, or exit)">⏸️ Incomplete</span>' : '';
       const stageLabel = r.interrupted && r.interruptedAt !== undefined ? {0: 'Wellbeing', 1: 'Resume Q&A', 2: 'Problem Solving', 3: 'Wrap-up'}[r.interruptedAt] || 'Unknown' : '';
       const stageText = r.interrupted && stageLabel ? ` (stopped at: ${stageLabel})` : '';
+      const contactLine = [r.candidatePhone, r.candidateEmail].filter(Boolean).join(' · ');
       return `
         <tr data-id="${escapeHtml(r.id)}" style="${r.interrupted ? 'opacity: 0.85; background-color: rgba(250,204,21,0.05);' : ''}">
           <td class="clickable-cell">
             ${escapeHtml(r.teacherName)}
             ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}
             ${interruptedBadge}
+            ${contactLine ? `<div class="candidate-contact">${escapeHtml(contactLine)}</div>` : ''}
           </td>
           <td class="clickable-cell">${escapeHtml(r.subject)}</td>
           <td class="clickable-cell"><small>${date}${stageText}</small></td>
@@ -199,7 +256,7 @@ const Admin = {
 
   renderReport(record) {
     const container = document.getElementById('report-container');
-    const { teacherName, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {} } = record;
+    const { teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {} } = record;
     const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
@@ -234,6 +291,7 @@ const Admin = {
         <div>
           <h2 class="report-name">${escapeHtml(teacherName)}</h2>
           <p class="report-meta">${escapeHtml(subject)} · ${date}</p>
+          ${(candidatePhone || candidateEmail) ? `<p class="report-meta">${[candidatePhone, candidateEmail].filter(Boolean).map(escapeHtml).join(' · ')}</p>` : ''}
         </div>
         <div class="rec-badge" style="background:${recStyle.bg};border-color:${recStyle.border};color:${recStyle.color}">
           ${escapeHtml(recommendation)}

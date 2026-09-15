@@ -140,6 +140,8 @@ const Timer = {
 const App = {
   s: {
     teacherName:   '',
+    candidatePhone: '',
+    candidateEmail: '',
     subject:       '',
     spokenLang:    'en-IN',
     stageIndex:    0,
@@ -200,6 +202,8 @@ const App = {
           sessionId: this.s.sessionId,
           transcript: ReportManager.getPlainTranscript(),
           teacherName: this.s.teacherName,
+          candidatePhone: this.s.candidatePhone,
+          candidateEmail: this.s.candidateEmail,
           subject: this.s.subject,
           problemScore: this.s.problemScore,
           misconductCount: this.s.misconductCount,
@@ -290,10 +294,16 @@ const App = {
     VoiceManager.unlockAudio();
 
     const name    = document.getElementById('teacher-name').value.trim();
+    const phone   = document.getElementById('teacher-phone').value.trim();
+    const email   = document.getElementById('teacher-email').value.trim();
     const subject = document.getElementById('subject-select').value;
     const spokenLang = document.getElementById('language-select').value || 'en-IN';
 
     if (!name)    { this.flashError('teacher-name',    'Please enter your name');      return; }
+    if (!phone)   { this.flashError('teacher-phone',   'Please enter your phone number'); return; }
+    if (!/^[+]?[\d\s-]{7,15}$/.test(phone)) { this.flashError('teacher-phone', 'Please enter a valid phone number'); return; }
+    if (!email)   { this.flashError('teacher-email',   'Please enter your email address'); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { this.flashError('teacher-email', 'Please enter a valid email address'); return; }
     if (!subject) { this.flashError('subject-select',  'Please select a subject');     return; }
     if (this.s.resumeAnalyzing) { this.showToast('Please wait — still analysing your resume…', 'warn'); return; }
     if (!this.s.resumeAnalyzed) {
@@ -345,6 +355,8 @@ const App = {
     }
 
     this.s.teacherName = name;
+    this.s.candidatePhone = phone;
+    this.s.candidateEmail = email;
     this.s.subject     = subject;
     this.s.spokenLang  = spokenLang;
     this.s.startDate   = new Date().toLocaleString('en-IN');
@@ -1442,6 +1454,8 @@ const App = {
         transcript:      ReportManager.getPlainTranscript(),
         chapters:        ReportManager.getChapters(),
         teacherName:     this.s.teacherName,
+        candidatePhone:  this.s.candidatePhone,
+        candidateEmail:  this.s.candidateEmail,
         subject:         this.s.subject,
         problemScore:    this.s.problemScore,
         misconductCount: this.s.misconductCount,

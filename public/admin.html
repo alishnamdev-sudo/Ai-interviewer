@@ -46,6 +46,25 @@
   </div>
 
   <div id="list-view">
+    <div class="filters-bar">
+      <div class="filter-search-wrap">
+        <svg class="filter-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="search-input" placeholder="Search by name, phone, or email…" autocomplete="off"/>
+      </div>
+      <select id="subject-filter">
+        <option value="">All Subjects</option>
+        <option value="Mathematics">Mathematics</option>
+        <option value="Physics">Physics</option>
+        <option value="Chemistry">Chemistry</option>
+        <option value="Biology">Biology</option>
+        <option value="Computer Science">Computer Science</option>
+        <option value="English">English Literature</option>
+      </select>
+      <input type="date" id="date-from" title="From date"/>
+      <span class="filter-date-sep">–</span>
+      <input type="date" id="date-to" title="To date"/>
+      <button id="clear-filters-btn" class="btn-secondary" type="button">Clear</button>
+    </div>
     <div class="reports-table-wrap">
       <table class="reports-table">
         <thead>
@@ -61,6 +80,7 @@
         <tbody id="reports-tbody"></tbody>
       </table>
       <div id="reports-empty" class="empty-state hidden">No interviews completed yet.</div>
+      <div id="reports-no-match" class="empty-state hidden">No interviews match your search/filters.</div>
     </div>
   </div>
 

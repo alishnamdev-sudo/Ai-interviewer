@@ -81,6 +81,60 @@ body { overflow-y: auto; }
   min-height: 18px;
 }
 
+/* ── Filters Bar ─────────────────────────────────────────────────────────── */
+.filters-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.filter-search-wrap {
+  position: relative;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.filter-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.filters-bar input[type="text"],
+.filters-bar input[type="date"],
+.filters-bar select {
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13.5px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.filter-search-wrap input[type="text"] {
+  width: 100%;
+  padding-left: 36px;
+}
+.filters-bar input:focus,
+.filters-bar select:focus { border-color: var(--blue); }
+.filter-date-sep { color: var(--text-muted); font-size: 13px; }
+.filters-bar .btn-secondary {
+  width: auto;
+  padding: 10px 16px;
+  font-size: 13.5px;
+}
+.candidate-contact {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-top: 2px;
+}
+
 /* ── Reports Table ───────────────────────────────────────────────────────── */
 .reports-table-wrap {
   background: var(--bg-card);

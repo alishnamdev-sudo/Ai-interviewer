@@ -1152,7 +1152,7 @@ const CATEGORY_WEIGHTS = {
 
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null, chapters = null } = req.body;
+    const { transcript, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null, chapters = null } = req.body;
 
     // Client-reported video chapter markers (interview stage -> elapsed seconds in the
     // recording) — best-effort and only ever used to render seek links in the admin
@@ -1308,7 +1308,10 @@ Respond ONLY in this exact JSON format (no markdown fences):
     reportData.interruptedAt = interrupted ? interruptedAt : null;
     reportData.stageIndex = stageIndex;
 
-    const submissionId = store.saveReport({ sessionId, teacherName, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted, chapters: safeChapters });
+    const safePhone = typeof candidatePhone === 'string' ? candidatePhone.slice(0, 20) : null;
+    const safeEmail = typeof candidateEmail === 'string' ? candidateEmail.slice(0, 200) : null;
+
+    const submissionId = store.saveReport({ sessionId, teacherName, candidatePhone: safePhone, candidateEmail: safeEmail, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted, chapters: safeChapters });
     console.log(`[/api/report] Saved report ${submissionId} for ${teacherName} (interrupted=${interrupted})`);
 
     // The report itself is never sent back to the candidate's browser — it's

@@ -36,7 +36,7 @@ const ID_RE = /^[0-9a-f-]+$/i;
 // every time, this upserts: the file is named after the sessionId, and a
 // final (non-interrupted) report already on disk is never clobbered by a
 // late-arriving interrupted duplicate for that same session.
-function saveReport({ sessionId = null, teacherName, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false, chapters = [] }) {
+function saveReport({ sessionId = null, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false, chapters = [] }) {
   const id = (typeof sessionId === 'string' && ID_RE.test(sessionId)) ? sessionId : crypto.randomUUID();
   const file = path.join(DATA_DIR, `${id}.json`);
 
@@ -56,6 +56,8 @@ function saveReport({ sessionId = null, teacherName, subject, problemScore, tran
     id,
     createdAt: new Date().toISOString(),
     teacherName,
+    candidatePhone,
+    candidateEmail,
     subject,
     problemScore,
     transcript,
@@ -81,6 +83,8 @@ function listReports() {
         id: record.id,
         createdAt: record.createdAt,
         teacherName: record.teacherName,
+        candidatePhone: record.candidatePhone ?? null,
+        candidateEmail: record.candidateEmail ?? null,
         subject: record.subject,
         overallScore: record.report?.overallScore ?? null,
         recommendation: record.report?.recommendation ?? null,
