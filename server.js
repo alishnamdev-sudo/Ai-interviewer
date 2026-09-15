@@ -398,7 +398,8 @@ app.get('/api/admin/reports', requireAdmin, (req, res) => {
 app.get('/api/admin/reports/:id', requireAdmin, (req, res) => {
   const report = store.getReport(req.params.id);
   if (!report) return res.status(404).json({ error: 'Not found' });
-  res.json(report);
+  const repeatAttempts = store.getRepeatAttempts(report.id, report.candidateEmail, report.candidatePhone);
+  res.json({ ...report, repeatAttempts });
 });
 
 app.delete('/api/admin/reports/:id', requireAdmin, (req, res) => {

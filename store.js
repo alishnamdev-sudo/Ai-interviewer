@@ -74,7 +74,7 @@ function saveReport({ sessionId = null, teacherName, candidatePhone = null, cand
   return id;
 }
 
-function listReports() {
+function _loadSummaries() {
   return fs.readdirSync(DATA_DIR)
     .filter(f => f.endsWith('.json'))
     .map(f => {
@@ -92,7 +92,62 @@ function listReports() {
         interrupted: record.interrupted ?? false,
         interruptedAt: record.interruptedAt ?? undefined
       };
-    })
+    });
+}
+
+function _normalizeEmail(v) { return typeof v === 'string' ? v.trim().toLowerCase() : ''; }
+function _normalizePhone(v) { return typeof v === 'string' ? v.replace(/\D/g, '') : ''; }
+// Phone numbers this short are more likely a typo/placeholder than two
+// candidates genuinely sharing a number, so they're excluded from matching.
+const MIN_PHONE_DIGITS = 7;
+
+// Interview attempts have no shared candidate id — each is a standalone file
+// keyed by a client-generated sessionId — so candidates who retake the
+// interview can only be linked after the fact, by reused email/phone.
+function _attachRepeatCounts(summaries) {
+  const byEmail = new Map();
+  const byPhone = new Map();
+  summaries.forEach(r => {
+    const email = _normalizeEmail(r.candidateEmail);
+    if (email) {
+      if (!byEmail.has(email)) byEmail.set(email, []);
+      byEmail.get(email).push(r.id);
+    }
+    const phone = _normalizePhone(r.candidatePhone);
+    if (phone.length >= MIN_PHONE_DIGITS) {
+      if (!byPhone.has(phone)) byPhone.set(phone, []);
+      byPhone.get(phone).push(r.id);
+    }
+  });
+
+  return summaries.map(r => {
+    const matchIds = new Set();
+    const email = _normalizeEmail(r.candidateEmail);
+    const phone = _normalizePhone(r.candidatePhone);
+    if (email) (byEmail.get(email) || []).forEach(id => id !== r.id && matchIds.add(id));
+    if (phone.length >= MIN_PHONE_DIGITS) (byPhone.get(phone) || []).forEach(id => id !== r.id && matchIds.add(id));
+    return { ...r, priorAttempts: matchIds.size };
+  });
+}
+
+function listReports() {
+  return _attachRepeatCounts(_loadSummaries())
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+
+// Other interviews by the same candidate (matched by email or phone),
+// excluding the report identified by `id` itself — used by the admin detail
+// view to list a repeat candidate's other attempts.
+function getRepeatAttempts(id, candidateEmail, candidatePhone) {
+  const email = _normalizeEmail(candidateEmail);
+  const phone = _normalizePhone(candidatePhone);
+  if (!email && phone.length < MIN_PHONE_DIGITS) return [];
+
+  return _loadSummaries()
+    .filter(r => r.id !== id && (
+      (email && _normalizeEmail(r.candidateEmail) === email) ||
+      (phone.length >= MIN_PHONE_DIGITS && _normalizePhone(r.candidatePhone) === phone)
+    ))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
@@ -132,4 +187,4 @@ function deleteReport(id) {
   }
 }
 
-module.exports = { saveReport, listReports, getReport, deleteReport };
+module.exports = { saveReport, listReports, getReport, deleteReport, getRepeatAttempts };

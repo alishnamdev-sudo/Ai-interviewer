@@ -203,6 +203,10 @@ const Admin = {
       const interruptedBadge = r.interrupted ? '<span class="interrupted-badge" title="Interview was interrupted (refresh, network, or exit)">⏸️ Incomplete</span>' : '';
       const stageLabel = r.interrupted && r.interruptedAt !== undefined ? {0: 'Wellbeing', 1: 'Resume Q&A', 2: 'Problem Solving', 3: 'Wrap-up'}[r.interruptedAt] || 'Unknown' : '';
       const stageText = r.interrupted && stageLabel ? ` (stopped at: ${stageLabel})` : '';
+      const repeatContact = r.candidateEmail || r.candidatePhone || '';
+      const repeatBadge = r.priorAttempts > 0
+        ? `<span class="repeat-badge" data-repeat-contact="${escapeHtml(repeatContact)}" title="Same email or phone appears on ${r.priorAttempts} other interview(s) — click to see them all">🔁 Repeat (${r.priorAttempts + 1}x)</span>`
+        : '';
       const contactLine = [r.candidatePhone, r.candidateEmail].filter(Boolean).join(' · ');
       return `
         <tr data-id="${escapeHtml(r.id)}" style="${r.interrupted ? 'opacity: 0.85; background-color: rgba(250,204,21,0.05);' : ''}">
@@ -210,6 +214,7 @@ const Admin = {
             ${escapeHtml(r.teacherName)}
             ${r.conductFlagged ? '<span class="conduct-flag-badge" title="Conduct flagged during this interview">⚠️ Flagged</span>' : ''}
             ${interruptedBadge}
+            ${repeatBadge}
             ${contactLine ? `<div class="candidate-contact">${escapeHtml(contactLine)}</div>` : ''}
           </td>
           <td class="clickable-cell">${escapeHtml(r.subject)}</td>
@@ -225,6 +230,17 @@ const Admin = {
       row.querySelectorAll('.clickable-cell').forEach(cell => {
         cell.addEventListener('click', () => this.viewReport(row.dataset.id));
       });
+
+      // Repeat-candidate badge: filter the list down to this candidate's
+      // other attempts instead of opening the row's own report.
+      const repeatBadge = row.querySelector('.repeat-badge');
+      if (repeatBadge) {
+        repeatBadge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          document.getElementById('search-input').value = repeatBadge.dataset.repeatContact;
+          this.renderReports();
+        });
+      }
 
       // Delete button click handler
       row.querySelector('.btn-delete').addEventListener('click', async (e) => {
@@ -256,7 +272,7 @@ const Admin = {
 
   renderReport(record) {
     const container = document.getElementById('report-container');
-    const { teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {} } = record;
+    const { teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {}, repeatAttempts = [] } = record;
     const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
@@ -280,11 +296,26 @@ const Admin = {
     const strengthItems = strengths.map(s => `<li>${escapeHtml(s)}</li>`).join('');
     const improveItems  = improvements.map(i => `<li>${escapeHtml(i)}</li>`).join('');
 
+    const repeatItems = repeatAttempts.map(a => {
+      const aDate = new Date(a.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+      return `
+        <li class="repeat-attempt-item" data-id="${escapeHtml(a.id)}">
+          <span>${aDate} · ${escapeHtml(a.subject)}${a.interrupted ? ' (incomplete)' : ''}</span>
+          <span style="color:${getScoreColor(a.overallScore || 0)}; font-weight:700;">${a.overallScore != null ? fmtScore(a.overallScore) + '/100' : '—'}</span>
+        </li>`;
+    }).join('');
+
     container.innerHTML = `
       ${conductFlagged ? `
       <div class="conduct-flag-banner">
         ⚠️ <strong>Conduct flagged</strong> — this interview was ended early after ${misconductCount} incident(s)
         of abusive/inappropriate language or triggering responses, despite warnings.
+      </div>` : ''}
+
+      ${repeatAttempts.length ? `
+      <div class="repeat-banner">
+        🔁 <strong>Repeat candidate</strong> — the same email or phone appears on ${repeatAttempts.length} other interview${repeatAttempts.length > 1 ? 's' : ''}:
+        <ul class="repeat-attempt-list">${repeatItems}</ul>
       </div>` : ''}
 
       <div class="report-hero">
@@ -372,6 +403,10 @@ const Admin = {
         </div>
       </div>
     `;
+
+    container.querySelectorAll('.repeat-attempt-item').forEach(item => {
+      item.addEventListener('click', () => this.viewReport(item.dataset.id));
+    });
   }
 };
 
