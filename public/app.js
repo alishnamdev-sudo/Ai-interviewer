@@ -349,7 +349,7 @@ const App = {
       if (!granted) {
         startBtn.disabled = false;
         startBtn.innerHTML = startBtnOriginalHTML;
-        this.showToast('Camera access is required to start the interview. Please allow camera permission and try again.', 'warn');
+        this.showToast(this._cameraErrorMessage(), 'warn');
         return;
       }
     }
@@ -519,6 +519,7 @@ const App = {
       console.warn('Camera access error:', e);
       this._reportClientError('camera-permission', e);
       this.s.cameraEnabled = false;
+      this.s.cameraErrorName = e && e.name;
       return false;
     }
   },
@@ -546,6 +547,27 @@ const App = {
       }
     } catch (_) {
       // Diagnostics must never disrupt the actual interview flow.
+    }
+  },
+
+  // Picks candidate-facing wording by the getUserMedia failure reason
+  // (this.s.cameraErrorName, set in _requestCameraAccess's catch) instead of
+  // one generic "try again" for every case — real client-error logs showed
+  // candidates retrying a NotAllowedError (browser/OS already denied it, no
+  // popup will reappear on its own) blindly several times with the old
+  // generic message, since it gave them nothing to actually act on.
+  _cameraErrorMessage() {
+    switch (this.s.cameraErrorName) {
+      case 'NotAllowedError':
+        return 'Camera/microphone access is blocked. Tap the icon next to the address bar → Permissions → allow Camera and Microphone, then reload this page and try again.';
+      case 'NotReadableError':
+      case 'TrackStartError':
+        return 'Your camera or microphone appears to be in use by another app (e.g. a video call). Please close it fully, then try again.';
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        return 'No camera or microphone was found on this device. Please try a different device.';
+      default:
+        return 'Camera access is required to start the interview. Please allow camera permission and try again.';
     }
   },
 
