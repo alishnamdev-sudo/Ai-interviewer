@@ -1247,6 +1247,13 @@ app.post('/api/report', async (req, res) => {
       : [];
 
     console.log(`[/api/report] Received report: name=${teacherName}, subject=${subject}, interrupted=${interrupted}, stageIndex=${stageIndex}`);
+    if (typeof sessionId !== 'string' || !sessionId) {
+      // store.saveReport() falls back to a random id when this is missing,
+      // which mints a brand-new record instead of upserting into the
+      // candidate's existing one — surfacing as a duplicate completed/
+      // incomplete row for the same interview in the admin dashboard.
+      console.warn(`[/api/report] Missing/invalid sessionId for ${teacherName} — this submission will NOT be deduped against any other submission for this interview`);
+    }
 
     // Only attach a recording that actually exists on disk — a made-up id in
     // the request must not become a broken (or probing) link in the report.

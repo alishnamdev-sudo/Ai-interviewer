@@ -82,7 +82,7 @@ const RecoveryManager = {
   // Submit partial interview data on page unload (NO resume dialog shown to candidate)
   async submitPartialReport() {
     try {
-      if (!App.s.teacherName || (App.s.stageIndex === 0 && !App.s.history.length)) {
+      if (!App.s.teacherName || (App.s.stageIndex === 0 && !App.s.history.length) || App.s.reportSubmitted) {
         return;
       }
 
@@ -93,8 +93,11 @@ const RecoveryManager = {
         headers: { 'Content-Type': 'application/json' },
         keepalive: true,
         body: JSON.stringify({
+          sessionId: App.s.sessionId,
           transcript: ReportManager.getPlainTranscript(),
           teacherName: App.s.teacherName,
+          candidatePhone: App.s.candidatePhone,
+          candidateEmail: App.s.candidateEmail,
           subject: App.s.subject,
           problemScore: App.s.problemScore,
           misconductCount: App.s.misconductCount,
@@ -134,11 +137,22 @@ window.addEventListener('beforeunload', (e) => {
 // and to avoid Permissions Policy violations
 window.addEventListener('pagehide', (e) => {
   try {
+    // Also guarded on reportSubmitted: generateReport() (app.js) already sends
+    // the real (possibly final) report for this sessionId on normal
+    // completion — without this check, every completed interview would
+    // additionally beacon a spurious "interrupted" duplicate the instant the
+    // candidate closes the resulting thank-you tab. sessionId is included so
+    // that even if this does fire, store.js upserts into the same record
+    // instead of minting a brand-new one (which is what produced the
+    // duplicate completed/incomplete rows in the admin dashboard).
     const interviewActive = App.s.teacherName && (App.s.stageIndex > 0 || App.s.history.length > 0);
-    if (interviewActive && !App.s.quitting) {
+    if (interviewActive && !App.s.quitting && !App.s.reportSubmitted) {
       const data = {
+        sessionId: App.s.sessionId,
         transcript: ReportManager ? ReportManager.getPlainTranscript() : '',
         teacherName: App.s.teacherName,
+        candidatePhone: App.s.candidatePhone,
+        candidateEmail: App.s.candidateEmail,
         subject: App.s.subject,
         problemScore: App.s.problemScore,
         misconductCount: App.s.misconductCount,
