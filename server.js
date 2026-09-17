@@ -409,6 +409,34 @@ app.delete('/api/admin/reports/:id', requireAdmin, (req, res) => {
   res.json({ success: true, message: 'Report deleted' });
 });
 
+// Fire-and-forget diagnostic beacon for client-side failures the candidate
+// never sees an error for (e.g. getUserMedia rejected before the interview
+// starts) — see _requestCameraAccess in app.js. Never surfaces anything back
+// to the candidate; always 204 so a failure here can't cascade into a visible
+// error of its own.
+app.post('/api/client-error', (req, res) => {
+  try {
+    const { context, errorName, errorMessage, teacherName, candidatePhone, candidateEmail, subject } = req.body || {};
+    store.logClientError({
+      context: typeof context === 'string' ? context.slice(0, 100) : null,
+      errorName: typeof errorName === 'string' ? errorName.slice(0, 100) : null,
+      errorMessage: typeof errorMessage === 'string' ? errorMessage.slice(0, 500) : null,
+      teacherName: typeof teacherName === 'string' ? teacherName.slice(0, 200) : null,
+      candidatePhone: typeof candidatePhone === 'string' ? candidatePhone.slice(0, 50) : null,
+      candidateEmail: typeof candidateEmail === 'string' ? candidateEmail.slice(0, 200) : null,
+      subject: typeof subject === 'string' ? subject.slice(0, 100) : null,
+      userAgent: (req.headers['user-agent'] || '').slice(0, 300)
+    });
+  } catch (e) {
+    console.error('[/api/client-error] Failed to log:', e.message);
+  }
+  res.sendStatus(204);
+});
+
+app.get('/api/admin/client-errors', requireAdmin, (req, res) => {
+  res.json(store.listClientErrors());
+});
+
 // ─── System Prompt Builder ────────────────────────────────────────────────────
 // The AI addresses the candidate by first name only in everything it speaks
 // or generates — teacherName (typed at setup, possibly auto-filled from the

@@ -44,6 +44,8 @@ const Admin = {
     document.getElementById('login-form').addEventListener('submit', e => { e.preventDefault(); this.login(); });
     document.getElementById('logout-btn').addEventListener('click', () => this.logout());
     document.getElementById('back-link').addEventListener('click', () => this.showList());
+    document.getElementById('errors-back-link').addEventListener('click', () => this.showList());
+    document.getElementById('show-errors-btn').addEventListener('click', () => this.showErrors());
 
     document.getElementById('search-input').addEventListener('input', () => this.renderReports());
     document.getElementById('subject-filter').addEventListener('change', () => this.renderReports());
@@ -139,7 +141,48 @@ const Admin = {
   showList() {
     document.getElementById('list-view').classList.remove('hidden');
     document.getElementById('detail-view').classList.add('hidden');
+    document.getElementById('errors-view').classList.add('hidden');
     this.loadReports();
+  },
+
+  async showErrors() {
+    document.getElementById('list-view').classList.add('hidden');
+    document.getElementById('detail-view').classList.add('hidden');
+    document.getElementById('errors-view').classList.remove('hidden');
+
+    const res = await fetch('/api/admin/client-errors');
+    if (res.status === 401) { this.showLogin(); return; }
+
+    const errors = await res.json();
+    this.renderErrors(errors);
+  },
+
+  renderErrors(errors) {
+    const tbody = document.getElementById('errors-tbody');
+    const empty = document.getElementById('errors-empty');
+
+    if (!errors.length) {
+      tbody.innerHTML = '';
+      empty.classList.remove('hidden');
+      return;
+    }
+    empty.classList.add('hidden');
+
+    tbody.innerHTML = errors.map(e => {
+      const time = new Date(e.loggedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+      const contactLine = [e.candidatePhone, e.candidateEmail].filter(Boolean).join(' · ');
+      return `
+        <tr>
+          <td><small>${time}</small></td>
+          <td>
+            ${escapeHtml(e.teacherName || '—')}
+            ${contactLine ? `<div class="candidate-contact">${escapeHtml(contactLine)}</div>` : ''}
+          </td>
+          <td>${escapeHtml(e.context || '—')}</td>
+          <td><code>${escapeHtml(e.errorName || 'Unknown')}</code>${e.errorMessage ? `<div class="candidate-contact">${escapeHtml(e.errorMessage)}</div>` : ''}</td>
+          <td><small title="${escapeHtml(e.userAgent || '')}">${escapeHtml((e.userAgent || '—').slice(0, 40))}</small></td>
+        </tr>`;
+    }).join('');
   },
 
   async loadReports() {

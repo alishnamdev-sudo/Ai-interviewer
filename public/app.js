@@ -517,8 +517,35 @@ const App = {
       return true;
     } catch (e) {
       console.warn('Camera access error:', e);
+      this._reportClientError('camera-permission', e);
       this.s.cameraEnabled = false;
       return false;
+    }
+  },
+
+  // Fire-and-forget diagnostic beacon so a failure the candidate never sees
+  // an error for (by design — see catch above) still leaves a trail for
+  // debugging. sendBeacon survives the page navigating away right after;
+  // fetch+keepalive is the fallback where sendBeacon isn't available.
+  // Never throws, never awaited, never shown to the candidate.
+  _reportClientError(context, err) {
+    try {
+      const payload = JSON.stringify({
+        context,
+        errorName: err && err.name,
+        errorMessage: err && err.message,
+        teacherName: document.getElementById('teacher-name')?.value.trim() || null,
+        candidatePhone: document.getElementById('teacher-phone')?.value.trim() || null,
+        candidateEmail: document.getElementById('teacher-email')?.value.trim() || null,
+        subject: document.getElementById('subject-select')?.value || null
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/client-error', new Blob([payload], { type: 'application/json' }));
+      } else {
+        fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(() => {});
+      }
+    } catch (_) {
+      // Diagnostics must never disrupt the actual interview flow.
     }
   },
 

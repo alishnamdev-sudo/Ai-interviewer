@@ -158,6 +158,29 @@ function getReport(id) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
+// Best-effort diagnostic trail for client-side failures that never become a
+// report (e.g. camera/mic permission rejected before the interview starts) —
+// a single append-only file, since these are read occasionally for debugging
+// rather than looked up by id like reports are.
+const CLIENT_ERRORS_FILE = path.join(DATA_ROOT, 'client-errors.jsonl');
+
+function logClientError(entry) {
+  const line = JSON.stringify({ loggedAt: new Date().toISOString(), ...entry });
+  fs.appendFileSync(CLIENT_ERRORS_FILE, line + '\n');
+}
+
+// Most recent first; capped since this file only ever grows.
+function listClientErrors(limit = 200) {
+  if (!fs.existsSync(CLIENT_ERRORS_FILE)) return [];
+  return fs.readFileSync(CLIENT_ERRORS_FILE, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map(line => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean)
+    .reverse()
+    .slice(0, limit);
+}
+
 function deleteReport(id) {
   if (!ID_RE.test(id)) return false;
   const file = path.join(DATA_DIR, `${id}.json`);
@@ -187,4 +210,4 @@ function deleteReport(id) {
   }
 }
 
-module.exports = { saveReport, listReports, getReport, deleteReport, getRepeatAttempts };
+module.exports = { saveReport, listReports, getReport, deleteReport, getRepeatAttempts, logClientError, listClientErrors };

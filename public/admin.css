@@ -19,6 +19,8 @@ body { overflow-y: auto; }
   gap: 16px;
 }
 
+.admin-header-actions { display: flex; align-items: center; gap: 10px; }
+
 .hidden { display: none !important; }
 
 /* ── Login ───────────────────────────────────────────────────────────────── */

@@ -42,7 +42,10 @@
       <h2 class="report-name">Interview Results</h2>
       <p class="report-meta">V-Select — AI-Powered Talent Assessment & Selection Engine</p>
     </div>
-    <button id="logout-btn" class="btn-secondary">Log Out</button>
+    <div class="admin-header-actions">
+      <button id="show-errors-btn" class="btn-secondary">⚠️ Diagnostics</button>
+      <button id="logout-btn" class="btn-secondary">Log Out</button>
+    </div>
   </div>
 
   <div id="list-view">
@@ -87,6 +90,29 @@
   <div id="detail-view" class="hidden">
     <span class="back-link" id="back-link">← Back to all results</span>
     <div id="report-container"></div>
+  </div>
+
+  <div id="errors-view" class="hidden">
+    <span class="back-link" id="errors-back-link">← Back to all results</span>
+    <p class="report-meta" style="margin-bottom:14px;">
+      Failures candidates never see an error for (e.g. camera/mic permission rejected before the
+      interview starts) — logged silently so they can still be diagnosed.
+    </p>
+    <div class="reports-table-wrap">
+      <table class="reports-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Candidate</th>
+            <th>Context</th>
+            <th>Error</th>
+            <th>Device</th>
+          </tr>
+        </thead>
+        <tbody id="errors-tbody"></tbody>
+      </table>
+      <div id="errors-empty" class="empty-state hidden">No client errors logged.</div>
+    </div>
   </div>
 </div>
 
