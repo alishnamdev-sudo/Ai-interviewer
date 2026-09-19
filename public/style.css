@@ -82,6 +82,7 @@ input, select, textarea { font-family: inherit; }
 /* ═══════════════════════════════════════════════════════════════════════════
    SCREEN 1 — SETUP
    ═══════════════════════════════════════════════════════════════════════════ */
+#screen-disclaimer,
 #screen-setup {
   align-items: center;
   justify-content: center;
@@ -91,6 +92,7 @@ input, select, textarea { font-family: inherit; }
   padding-top: max(24px, env(safe-area-inset-top));
   padding-bottom: max(24px, env(safe-area-inset-bottom));
 }
+#screen-disclaimer.active,
 #screen-setup.active { display: flex; }
 
 .setup-card {
