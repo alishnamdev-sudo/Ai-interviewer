@@ -307,6 +307,7 @@ input, select, textarea { font-family: inherit; }
 }
 .info-notice strong { color: var(--blue); display: block; margin-bottom: 4px; }
 .info-notice p { margin: 0; line-height: 1.4; }
+.info-notice-highlight { color: var(--blue); font-weight: 700; }
 
 .hidden { display: none !important; }
 
