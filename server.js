@@ -760,7 +760,12 @@ app.post('/api/parse-resume', async (req, res) => {
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.2, maxOutputTokens: 700, thinkingConfig: { thinkingBudget: 0 } }
+      // 700 was measured to leave almost no headroom for a real multi-role
+      // resume (a 14-year-experience test resume alone used 660/700 output
+      // tokens) — any candidate with a longer work history or achievements
+      // list would silently get truncated mid-JSON, which fails JSON.parse
+      // below and surfaces to the candidate as "Could not analyse the resume."
+      generationConfig: { temperature: 0.2, maxOutputTokens: 2500, thinkingConfig: { thinkingBudget: 0 } }
     });
 
     const promptText = `You are extracting structured information from a teacher's resume/CV for an interview system. Read the attached document carefully.
@@ -796,6 +801,14 @@ Respond ONLY with the exact JSON object below — no markdown fences, no prose b
     }
 
     const result = await withGeminiRetry('parse-resume', () => model.generateContent(parts), GEMINI_BUDGETS.slow);
+    const finishReason = result.response.candidates?.[0]?.finishReason;
+    if (finishReason && finishReason !== 'STOP') {
+      // Most commonly MAX_TOKENS (response cut off mid-JSON, about to fail
+      // JSON.parse below) — logged distinctly from a genuine API/parse error
+      // so this failure mode is identifiable in the logs rather than looking
+      // like an opaque "Could not analyse the resume" with no cause.
+      console.warn(`[/api/parse-resume] non-STOP finishReason: ${finishReason}`);
+    }
     let raw = result.response.text().trim();
     raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
 
@@ -1297,7 +1310,13 @@ app.post('/api/report', async (req, res) => {
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      generationConfig: { temperature: 0.5, maxOutputTokens: 800, thinkingConfig: { thinkingBudget: 0 } }
+      // Headroom raised alongside parse-resume's — a longer transcript (more
+      // problem-solving rounds, a fuller RESUME_QA discussion) pushes the
+      // model toward more detailed per-category feedback, and a response cut
+      // off mid-JSON here fails parsing below and silently becomes the
+      // "overallScore: 0 / Needs Improvement" fallback report, with nothing
+      // in the candidate's result to explain why.
+      generationConfig: { temperature: 0.5, maxOutputTokens: 1500, thinkingConfig: { thinkingBudget: 0 } }
     });
 
     // A candidate warned once or twice who then behaved appropriately is NOT
@@ -1382,6 +1401,13 @@ Respond ONLY in this exact JSON format (no markdown fences):
     let reportData;
     try {
       const result = await withGeminiRetry('report', () => model.generateContent(prompt), GEMINI_BUDGETS.slow);
+      const finishReason = result.response.candidates?.[0]?.finishReason;
+      if (finishReason && finishReason !== 'STOP') {
+        // Surfaces the specific cause (most likely MAX_TOKENS truncating the
+        // JSON mid-way) right next to the "saving fallback report" log below,
+        // instead of that fallback's cause being a mystery after the fact.
+        console.warn(`[/api/report] non-STOP finishReason: ${finishReason}`);
+      }
       let raw = result.response.text().trim();
       raw = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
       reportData = JSON.parse(raw);
