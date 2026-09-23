@@ -309,3 +309,27 @@ table.reports-table { width: 100%; border-collapse: collapse; }
 }
 .stat-rec-row:last-child { border-bottom: none; }
 .stat-rec-count { font-size: 16px; font-weight: 700; }
+
+.clickable { cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+.stat-card.clickable:hover { border-color: var(--blue); }
+.stat-rec-row.clickable:hover { background: var(--bg-card-hover); }
+
+/* ── Stat filter pill (shown above the table when a stat/rec was clicked) ── */
+.stat-filter-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -6px 0 14px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.stat-filter-pill span { color: var(--text-primary); font-weight: 700; }
+.stat-filter-pill button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+}
+.stat-filter-pill button:hover { color: var(--text-primary); }

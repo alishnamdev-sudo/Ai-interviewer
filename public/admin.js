@@ -39,6 +39,7 @@ function getRecommendationStyle(rec) {
 
 const Admin = {
   _allReports: [], // full unfiltered list from the last /api/admin/reports fetch
+  _statFilter: null, // { predicate, label } set by clicking a Statistics card/row, or null
 
   async init() {
     document.getElementById('login-form').addEventListener('submit', e => { e.preventDefault(); this.login(); });
@@ -54,6 +55,7 @@ const Admin = {
     document.getElementById('date-from').addEventListener('change', () => this.renderReports());
     document.getElementById('date-to').addEventListener('change', () => this.renderReports());
     document.getElementById('clear-filters-btn').addEventListener('click', () => this.clearFilters());
+    document.getElementById('stat-filter-clear').addEventListener('click', () => this.clearFilters());
 
     const res = await fetch('/api/admin/session');
     const { isAdmin } = await res.json();
@@ -62,11 +64,20 @@ const Admin = {
   },
 
   clearFilters() {
+    this._statFilter = null;
     document.getElementById('search-input').value = '';
     document.getElementById('subject-filter').value = '';
     document.getElementById('date-from').value = '';
     document.getElementById('date-to').value = '';
     this.renderReports();
+  },
+
+  // Jumps to the candidate list filtered down to whatever a Statistics
+  // card/row was clicked for — reuses the existing table (and its
+  // click-name-to-open-report behavior) instead of a separate view.
+  filterByStat(predicate, label) {
+    this._statFilter = { predicate, label };
+    this.showList();
   },
 
   showLogin() {
@@ -189,8 +200,8 @@ const Admin = {
       byRec.set(r.recommendation, (byRec.get(r.recommendation) || 0) + 1);
     });
 
-    const statCard = (label, value) => `
-      <div class="stat-card">
+    const statCard = (label, value, key) => `
+      <div class="stat-card clickable" data-stat-key="${key}">
         <span class="stat-value">${value}</span>
         <span class="stat-label">${escapeHtml(label)}</span>
       </div>`;
@@ -198,7 +209,7 @@ const Admin = {
     const recRow = (rec, count) => {
       const style = getRecommendationStyle(rec);
       return `
-        <div class="stat-rec-row">
+        <div class="stat-rec-row clickable" data-stat-rec="${escapeHtml(rec)}">
           <span class="rec-badge" style="background:${style.bg};border-color:${style.border};color:${style.color}">${escapeHtml(rec)}</span>
           <span class="stat-rec-count">${count}</span>
         </div>`;
@@ -206,16 +217,31 @@ const Admin = {
 
     container.innerHTML = `
       <div class="stats-grid">
-        ${statCard('Total interviews conducted', total)}
-        ${statCard('With video recording', withVideo)}
-        ${statCard('Completed', total - incomplete)}
-        ${statCard('Incomplete / failed', incomplete)}
+        ${statCard('Total interviews conducted', total, 'total')}
+        ${statCard('With video recording', withVideo, 'video')}
+        ${statCard('Completed', total - incomplete, 'completed')}
+        ${statCard('Incomplete / failed', incomplete, 'incomplete')}
       </div>
       <div class="stats-rec-section">
-        <h4>Recommendation breakdown (completed interviews)</h4>
+        <h4>Recommendation breakdown (completed interviews) — click a row to see those candidates</h4>
         ${RECOMMENDATIONS.map(rec => recRow(rec, byRec.get(rec))).join('')}
       </div>
     `;
+
+    const STAT_FILTERS = {
+      total: { predicate: () => true, label: 'All interviews' },
+      video: { predicate: r => r.hasVideo, label: 'With video recording' },
+      completed: { predicate: r => !r.interrupted, label: 'Completed' },
+      incomplete: { predicate: r => r.interrupted, label: 'Incomplete / failed' },
+    };
+    container.querySelectorAll('[data-stat-key]').forEach(el => {
+      const { predicate, label } = STAT_FILTERS[el.dataset.statKey];
+      el.addEventListener('click', () => this.filterByStat(predicate, label));
+    });
+    container.querySelectorAll('[data-stat-rec]').forEach(el => {
+      const rec = el.dataset.statRec;
+      el.addEventListener('click', () => this.filterByStat(r => !r.interrupted && r.recommendation === rec, rec));
+    });
   },
 
   renderErrors(errors) {
@@ -263,6 +289,10 @@ const Admin = {
     const empty = document.getElementById('reports-empty');
     const noMatch = document.getElementById('reports-no-match');
 
+    const pill = document.getElementById('stat-filter-pill');
+    pill.classList.toggle('hidden', !this._statFilter);
+    if (this._statFilter) document.getElementById('stat-filter-label').textContent = this._statFilter.label;
+
     if (!this._allReports.length) {
       tbody.innerHTML = '';
       empty.classList.remove('hidden');
@@ -279,6 +309,7 @@ const Admin = {
     const dateTo = dateToStr ? new Date(`${dateToStr}T23:59:59.999`) : null;
 
     const reports = this._allReports.filter(r => {
+      if (this._statFilter && !this._statFilter.predicate(r)) return false;
       if (subjectFilter && r.subject !== subjectFilter) return false;
 
       const created = new Date(r.createdAt);
