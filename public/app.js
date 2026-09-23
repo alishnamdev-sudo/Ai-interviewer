@@ -327,6 +327,12 @@ const App = {
       return;
     }
 
+    // Go fullscreen NOW, still inside the click's user-activation window —
+    // the awaits below (voice init/load) can outlast it, after which the
+    // browser refuses fullscreen. Awaited further down. Fullscreen also hides
+    // Chrome's "Sharing this tab" bar (the page itself can't remove it).
+    const fullscreenReady = this._requestFullscreen();
+
     // Recognition listens in whichever language the candidate picked; the AI
     // always speaks back in Indian English (VoiceManager.speak forces this
     // independent of recognition language — see voice.js). init() also asks
@@ -401,7 +407,7 @@ const App = {
     // CRITICAL: Request fullscreen FIRST on mobile
     // This prevents permission dialog from being blocked by page UI
     try {
-      await this._requestFullscreen();
+      await fullscreenReady;
     } catch (e) {
       console.warn('Fullscreen request failed (non-critical):', e);
     }
@@ -843,6 +849,10 @@ const App = {
       this.showToast('Please share your screen so your interviewer can follow your work — click Continue and choose "Share".', 'warn');
       return;
     }
+    // Enter fullscreen right after the share is granted (Chrome's share bar
+    // then hides). Quiet best-effort: if the click's activation has expired
+    // during the picker this is refused, and Begin Interview does it instead.
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
 
     btn.disabled = true;
     btn.querySelector('span').textContent = 'Uploading…';
