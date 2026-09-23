@@ -335,7 +335,7 @@ const App = {
     // (Recorder.start) captures the shared screen + camera corner for HR; mobile
     // / unsupported browsers resolve immediately and record camera-only.
     const screenShare = Recorder.requestScreen();
-    const fullscreenReady = this._requestFullscreen();
+    const fullscreenReady = this._requestFullscreen(true);
     if (await screenShare === 'denied' && !this._screenNudged) {
       // One gentle nudge; a second Begin Interview proceeds camera-only.
       this._screenNudged = true;
@@ -343,8 +343,13 @@ const App = {
       return;
     }
     await fullscreenReady;
-    // Fullscreen may have been refused or dropped while the picker was open — retry quietly.
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    // Fullscreen may have been refused or dropped while the picker was open (or
+    // the picker outlasted the click's activation): retry now, and if the
+    // browser still refuses, enter it on the candidate's very next tap/keypress.
+    if (!document.fullscreenElement) {
+      await this._requestFullscreen(true);
+      if (!document.fullscreenElement) this._fullscreenOnNextTap();
+    }
 
     // Recognition listens in whichever language the candidate picked; the AI
     // always speaks back in Indian English (VoiceManager.speak forces this
@@ -493,7 +498,19 @@ const App = {
   },
 
   // ── Fullscreen Management ──────────────────────────────────────────────────
-  async _requestFullscreen() {
+  // Browsers only allow fullscreen from a user gesture; if the screen-share
+  // picker ate the Begin Interview click's activation, use the next one.
+  _fullscreenOnNextTap() {
+    const events = ['pointerdown', 'keydown'];
+    const handler = () => {
+      if (document.fullscreenElement || this.s.quitting) return stop();
+      document.documentElement.requestFullscreen?.().then(stop).catch(() => {});
+    };
+    const stop = () => events.forEach(e => document.removeEventListener(e, handler, true));
+    events.forEach(e => document.addEventListener(e, handler, true));
+  },
+
+  async _requestFullscreen(quiet = false) {
     try {
       const elem = document.documentElement;
       if (elem.requestFullscreen) {
@@ -507,7 +524,7 @@ const App = {
       }
     } catch (err) {
       console.warn('Fullscreen request failed:', err);
-      this.showToast('⚠️ Please switch to fullscreen mode for the best interview experience.', 'warn');
+      if (!quiet) this.showToast('⚠️ Please switch to fullscreen mode for the best interview experience.', 'warn');
     }
   },
 
