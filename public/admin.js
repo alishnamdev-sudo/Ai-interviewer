@@ -40,6 +40,7 @@ function getRecommendationStyle(rec) {
 const Admin = {
   _allReports: [], // full unfiltered list from the last /api/admin/reports fetch
   _statFilter: null, // { predicate, label } set by clicking a Statistics card/row, or null
+  _lastFilteredReports: [], // whatever renderReports() last put in the table — what "Download CSV" exports
 
   async init() {
     document.getElementById('login-form').addEventListener('submit', e => { e.preventDefault(); this.login(); });
@@ -56,6 +57,7 @@ const Admin = {
     document.getElementById('date-to').addEventListener('change', () => this.renderReports());
     document.getElementById('clear-filters-btn').addEventListener('click', () => this.clearFilters());
     document.getElementById('stat-filter-clear').addEventListener('click', () => this.clearFilters());
+    document.getElementById('download-csv-btn').addEventListener('click', () => this.downloadCsv());
 
     const res = await fetch('/api/admin/session');
     const { isAdmin } = await res.json();
@@ -78,6 +80,35 @@ const Admin = {
   filterByStat(predicate, label) {
     this._statFilter = { predicate, label };
     this.showList();
+  },
+
+  // Exports whatever rows are currently in the table (honors the stat
+  // filter + search/subject/date filters) — not the full unfiltered list.
+  downloadCsv() {
+    const rows = this._lastFilteredReports;
+    if (!rows.length) { alert('No interviews to export.'); return; }
+
+    const csvField = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['Candidate', 'Phone', 'Email', 'Subject', 'Date', 'Overall Score', 'Recommendation', 'Status', 'Has Video'];
+    const lines = rows.map(r => [
+      r.teacherName,
+      r.candidatePhone,
+      r.candidateEmail,
+      r.subject,
+      new Date(r.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }),
+      r.overallScore != null ? fmtScore(r.overallScore) : '',
+      r.recommendation || '',
+      r.interrupted ? 'Incomplete' : 'Completed',
+      r.hasVideo ? 'Yes' : 'No',
+    ].map(csvField).join(','));
+    const csv = [header.map(csvField).join(','), ...lines].join('\r\n');
+
+    const filenamePart = (this._statFilter?.label || 'all').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    a.download = `interviews-${filenamePart}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   },
 
   showLogin() {
@@ -297,6 +328,7 @@ const Admin = {
       tbody.innerHTML = '';
       empty.classList.remove('hidden');
       noMatch.classList.add('hidden');
+      this._lastFilteredReports = [];
       return;
     }
     empty.classList.add('hidden');
@@ -323,6 +355,8 @@ const Admin = {
 
       return true;
     });
+
+    this._lastFilteredReports = reports;
 
     if (!reports.length) {
       tbody.innerHTML = '';
