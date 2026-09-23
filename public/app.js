@@ -449,9 +449,22 @@ const App = {
     // Start periodic checkpointing for recovery on accidental refresh
     RecoveryManager.startCheckpointing();
 
+    this._showSelfView();
     this.showScreen('interview');
     this.updateStageUI();
     await this.beginStage();
+  },
+
+  // Floating self-view shares the existing camera stream (no second permission
+  // prompt). No stream → box stays hidden; the candidate never sees an error.
+  _showSelfView() {
+    const v = document.getElementById('self-view');
+    if (!v) return;
+    const live = this.s.cameraStream && this.s.cameraStream.getVideoTracks().length > 0;
+    v.classList.toggle('hidden', !live);
+    if (!live) return;
+    v.srcObject = this.s.cameraStream;
+    v.play().catch(() => {});
   },
 
   // ── Fullscreen Management ──────────────────────────────────────────────────

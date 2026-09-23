@@ -421,6 +421,10 @@
   <div class="messages-wrap" id="messages" role="log" aria-live="polite" aria-label="Interview conversation">
   </div>
 
+  <!-- Candidate self-view: floating mirror of the same camera stream. Stays
+       hidden unless the stream is attached (see App._showSelfView). -->
+  <video id="self-view" class="self-view hidden" autoplay muted playsinline aria-hidden="true"></video>
+
   <!-- Voice Controls -->
   <div class="voice-controls">
     <!-- Waveform Visualiser -->
