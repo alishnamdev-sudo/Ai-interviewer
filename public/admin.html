@@ -43,6 +43,7 @@
       <p class="report-meta">V-Select — AI-Powered Talent Assessment & Selection Engine</p>
     </div>
     <div class="admin-header-actions">
+      <button id="show-stats-btn" class="btn-secondary">📊 Statistics</button>
       <button id="show-errors-btn" class="btn-secondary">⚠️ Diagnostics</button>
       <button id="logout-btn" class="btn-secondary">Log Out</button>
     </div>
@@ -85,6 +86,11 @@
       <div id="reports-empty" class="empty-state hidden">No interviews completed yet.</div>
       <div id="reports-no-match" class="empty-state hidden">No interviews match your search/filters.</div>
     </div>
+  </div>
+
+  <div id="stats-view" class="hidden">
+    <span class="back-link" id="stats-back-link">← Back to all results</span>
+    <div id="stats-container"></div>
   </div>
 
   <div id="detail-view" class="hidden">

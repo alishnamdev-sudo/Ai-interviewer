@@ -90,6 +90,7 @@ function _loadSummaries() {
         recommendation: record.report?.recommendation ?? null,
         conductFlagged: record.report?.conductFlagged ?? false,
         interrupted: record.interrupted ?? false,
+        hasVideo: !!record.recordingId,
         interruptedAt: record.interruptedAt ?? undefined
       };
     });

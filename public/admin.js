@@ -46,6 +46,8 @@ const Admin = {
     document.getElementById('back-link').addEventListener('click', () => this.showList());
     document.getElementById('errors-back-link').addEventListener('click', () => this.showList());
     document.getElementById('show-errors-btn').addEventListener('click', () => this.showErrors());
+    document.getElementById('stats-back-link').addEventListener('click', () => this.showList());
+    document.getElementById('show-stats-btn').addEventListener('click', () => this.showStats());
 
     document.getElementById('search-input').addEventListener('input', () => this.renderReports());
     document.getElementById('subject-filter').addEventListener('change', () => this.renderReports());
@@ -142,12 +144,14 @@ const Admin = {
     document.getElementById('list-view').classList.remove('hidden');
     document.getElementById('detail-view').classList.add('hidden');
     document.getElementById('errors-view').classList.add('hidden');
+    document.getElementById('stats-view').classList.add('hidden');
     this.loadReports();
   },
 
   async showErrors() {
     document.getElementById('list-view').classList.add('hidden');
     document.getElementById('detail-view').classList.add('hidden');
+    document.getElementById('stats-view').classList.add('hidden');
     document.getElementById('errors-view').classList.remove('hidden');
 
     const res = await fetch('/api/admin/client-errors');
@@ -155,6 +159,63 @@ const Admin = {
 
     const errors = await res.json();
     this.renderErrors(errors);
+  },
+
+  // Stats are computed from the full unfiltered report list (a fresh fetch,
+  // not just whatever the table's current search/filter happens to show).
+  async showStats() {
+    document.getElementById('list-view').classList.add('hidden');
+    document.getElementById('detail-view').classList.add('hidden');
+    document.getElementById('errors-view').classList.add('hidden');
+    document.getElementById('stats-view').classList.remove('hidden');
+
+    const res = await fetch('/api/admin/reports');
+    if (res.status === 401) { this.showLogin(); return; }
+
+    this._allReports = await res.json();
+    this.renderStats(this._allReports);
+  },
+
+  renderStats(reports) {
+    const container = document.getElementById('stats-container');
+    const total = reports.length;
+    const incomplete = reports.filter(r => r.interrupted).length;
+    const withVideo = reports.filter(r => r.hasVideo).length;
+
+    const RECOMMENDATIONS = ['Highly Recommended', 'Recommended', 'Needs Improvement', 'Not Recommended'];
+    const byRec = new Map(RECOMMENDATIONS.map(rec => [rec, 0]));
+    reports.forEach(r => {
+      if (r.interrupted) return; // incomplete attempts aren't a real recommendation
+      byRec.set(r.recommendation, (byRec.get(r.recommendation) || 0) + 1);
+    });
+
+    const statCard = (label, value) => `
+      <div class="stat-card">
+        <span class="stat-value">${value}</span>
+        <span class="stat-label">${escapeHtml(label)}</span>
+      </div>`;
+
+    const recRow = (rec, count) => {
+      const style = getRecommendationStyle(rec);
+      return `
+        <div class="stat-rec-row">
+          <span class="rec-badge" style="background:${style.bg};border-color:${style.border};color:${style.color}">${escapeHtml(rec)}</span>
+          <span class="stat-rec-count">${count}</span>
+        </div>`;
+    };
+
+    container.innerHTML = `
+      <div class="stats-grid">
+        ${statCard('Total interviews conducted', total)}
+        ${statCard('With video recording', withVideo)}
+        ${statCard('Completed', total - incomplete)}
+        ${statCard('Incomplete / failed', incomplete)}
+      </div>
+      <div class="stats-rec-section">
+        <h4>Recommendation breakdown (completed interviews)</h4>
+        ${RECOMMENDATIONS.map(rec => recRow(rec, byRec.get(rec))).join('')}
+      </div>
+    `;
   },
 
   renderErrors(errors) {
