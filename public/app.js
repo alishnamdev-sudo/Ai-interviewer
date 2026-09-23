@@ -327,11 +327,24 @@ const App = {
       return;
     }
 
-    // Go fullscreen NOW, still inside the click's user-activation window —
-    // the awaits below (voice init/load) can outlast it, after which the
-    // browser refuses fullscreen. Awaited further down. Fullscreen also hides
-    // Chrome's "Sharing this tab" bar (the page itself can't remove it).
+    // Screen share prompt + fullscreen, both fired NOW, inside this click's
+    // user-activation window (the awaits below can outlast it, after which the
+    // browser refuses both; requesting the share doesn't use up the activation,
+    // fullscreen does — so the share goes first). Fullscreen also hides Chrome's
+    // "Sharing this tab" bar (the page itself can't remove it). The recording
+    // (Recorder.start) captures the shared screen + camera corner for HR; mobile
+    // / unsupported browsers resolve immediately and record camera-only.
+    const screenShare = Recorder.requestScreen();
     const fullscreenReady = this._requestFullscreen();
+    if (await screenShare === 'denied' && !this._screenNudged) {
+      // One gentle nudge; a second Begin Interview proceeds camera-only.
+      this._screenNudged = true;
+      this.showToast('Please share your screen so your interviewer can follow your work — click Begin Interview and choose "Share".', 'warn');
+      return;
+    }
+    await fullscreenReady;
+    // Fullscreen may have been refused or dropped while the picker was open — retry quietly.
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
 
     // Recognition listens in whichever language the candidate picked; the AI
     // always speaks back in Indian English (VoiceManager.speak forces this
@@ -838,21 +851,6 @@ const App = {
 
   async compatContinue() {
     const btn = document.getElementById('compat-continue-btn');
-
-    // Ask to share the screen first — getDisplayMedia needs this click's fresh
-    // user activation, so it must precede the awaits below. The recording
-    // (Recorder.start) then captures the screen + camera corner for HR. One
-    // gentle nudge if declined; a second Continue proceeds camera-only. Mobile /
-    // unsupported browsers skip straight through.
-    if (await Recorder.requestScreen() === 'denied' && !this._screenNudged) {
-      this._screenNudged = true;
-      this.showToast('Please share your screen so your interviewer can follow your work — click Continue and choose "Share".', 'warn');
-      return;
-    }
-    // Enter fullscreen right after the share is granted (Chrome's share bar
-    // then hides). Quiet best-effort: if the click's activation has expired
-    // during the picker this is refused, and Begin Interview does it instead.
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
 
     btn.disabled = true;
     btn.querySelector('span').textContent = 'Uploading…';
