@@ -409,12 +409,18 @@ const App = {
     // NOW request camera — permission dialog appears in fullscreen
     this._startCameraCapture();
 
-    // Record the full interview (camera video + mic audio), streamed to the
+    // Record the full interview (screen + camera corner if shared, else camera; mic audio), streamed to the
     // server in chunks as it happens. Requested here, still within the "Begin
     // Interview" click's permission context. Best-effort: a denied mic or
     // unsupported browser just means no recording — never a blocked interview.
     const recording = await Recorder.start(this.s.cameraStream);
     if (recording) ReportManager.markRecordingStart();
+    // Leave a marker in the transcript if the candidate stops sharing mid-interview
+    // (the recording keeps going on the camera picture alone).
+    const shareTrack = Recorder.screenStream && Recorder.screenStream.getVideoTracks()[0];
+    if (shareTrack) shareTrack.addEventListener('ended', () => {
+      if (!this.s.quitting) this.addEntry('System', '[Candidate stopped sharing their screen]', STAGE_LABELS[this.stage] || 'Interview');
+    });
 
     // Register the recording as a live stream so HR can watch it from the
     // dashboard while it's being written (the live view reads the very file
@@ -664,7 +670,7 @@ const App = {
       const upMbps = UP_BYTES * 8 / 1e6 / upSec;
 
       detail.textContent = `↓ ${downMbps.toFixed(1)} Mbps · ↑ ${upMbps.toFixed(1)} Mbps · ${pingMs} ms`;
-      // The recording streams ~0.7 Mbps up for the whole interview, so upload
+      // The recording streams ~1.1 Mbps up for the whole interview, so upload
       // is the limiting factor; thresholds leave headroom above that.
       const poor = upMbps < 2 || downMbps < 4 || pingMs > 800;
       pill.textContent = poor ? 'Slow' : '✓ Good';
@@ -826,6 +832,18 @@ const App = {
 
   async compatContinue() {
     const btn = document.getElementById('compat-continue-btn');
+
+    // Ask to share the screen first — getDisplayMedia needs this click's fresh
+    // user activation, so it must precede the awaits below. The recording
+    // (Recorder.start) then captures the screen + camera corner for HR. One
+    // gentle nudge if declined; a second Continue proceeds camera-only. Mobile /
+    // unsupported browsers skip straight through.
+    if (await Recorder.requestScreen() === 'denied' && !this._screenNudged) {
+      this._screenNudged = true;
+      this.showToast('Please share your screen so your interviewer can follow your work — click Continue and choose "Share".', 'warn');
+      return;
+    }
+
     btn.disabled = true;
     btn.querySelector('span').textContent = 'Uploading…';
 
