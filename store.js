@@ -36,7 +36,7 @@ const ID_RE = /^[0-9a-f-]+$/i;
 // every time, this upserts: the file is named after the sessionId, and a
 // final (non-interrupted) report already on disk is never clobbered by a
 // late-arriving interrupted duplicate for that same session.
-function saveReport({ sessionId = null, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, interrupted = false, chapters = [] }) {
+function saveReport({ sessionId = null, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, transcript, report, recordingId = null, recordingExt = null, candidatePhotoId = null, interrupted = false, chapters = [] }) {
   const id = (typeof sessionId === 'string' && ID_RE.test(sessionId)) ? sessionId : crypto.randomUUID();
   const file = path.join(DATA_DIR, `${id}.json`);
 
@@ -66,6 +66,7 @@ function saveReport({ sessionId = null, teacherName, candidatePhone = null, cand
     // 'webm' on most browsers, 'mp4' when recorded on iOS Safari (no webm
     // MediaRecorder support there) — null alongside a null recordingId.
     recordingExt,
+    candidatePhotoId, // data/photos/<candidatePhotoId>.jpg — system-check verification photo, or null
     interrupted, // true if interview was interrupted/incomplete
     chapters // [{ label, seconds }] video chapter markers for the admin dashboard, or []
   };
@@ -201,6 +202,15 @@ function deleteReport(id) {
       if (fs.existsSync(recordingPath)) {
         fs.unlinkSync(recordingPath);
         console.log(`[store] Deleted recording: ${record.recordingId}.${record.recordingExt}`);
+      }
+    }
+
+    // Delete the verification photo if it exists
+    if (record.candidatePhotoId) {
+      const photoPath = path.join(DATA_ROOT, 'photos', `${record.candidatePhotoId}.jpg`);
+      if (fs.existsSync(photoPath)) {
+        fs.unlinkSync(photoPath);
+        console.log(`[store] Deleted photo: ${record.candidatePhotoId}.jpg`);
       }
     }
 

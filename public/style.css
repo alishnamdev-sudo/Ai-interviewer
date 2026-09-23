@@ -83,6 +83,7 @@ input, select, textarea { font-family: inherit; }
    SCREEN 1 — SETUP
    ═══════════════════════════════════════════════════════════════════════════ */
 #screen-disclaimer,
+#screen-compat,
 #screen-setup {
   align-items: center;
   justify-content: center;
@@ -93,6 +94,7 @@ input, select, textarea { font-family: inherit; }
   padding-bottom: max(24px, env(safe-area-inset-bottom));
 }
 #screen-disclaimer.active,
+#screen-compat.active,
 #screen-setup.active { display: flex; }
 
 .setup-card {
@@ -372,6 +374,154 @@ input, select, textarea { font-family: inherit; }
   accent-color: var(--blue);
 }
 .instructions-agree span { font-size: 12.5px; line-height: 1.5; color: var(--text-primary); }
+
+/* ── System Compatibility Check ──────────────────────────────────────────── */
+.compat-card { max-width: 480px; padding: 28px 32px; }
+.compat-card .eyebrow-badge { margin-bottom: 14px; }
+.compat-card .tagline { margin-bottom: 20px; font-size: 15px; font-weight: 600; color: var(--text-primary); }
+
+.compat-intro { font-size: 13px; line-height: 1.55; color: var(--text-muted); margin-bottom: 16px; }
+.compat-checklist { list-style: none; display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; text-align: left; }
+.compat-checklist li {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.03);
+}
+.compat-check-icon {
+  width: 38px; height: 38px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: rgba(79,134,247,0.12);
+  border: 1px solid rgba(79,134,247,0.25);
+  color: var(--blue);
+}
+.compat-check-icon svg { width: 20px; height: 20px; }
+.compat-checklist strong { display: block; font-size: 13.5px; color: var(--text-primary); margin-bottom: 2px; }
+.compat-checklist li div span { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+.compat-step + .compat-step { margin-top: 4px; }
+
+/* Check + review steps: camera on the left, live status panel on the right.
+   The card widens once permission is granted, and stacks on narrow screens. */
+.compat-card:has(#compat-permission-step.hidden) { max-width: 860px; }
+.compat-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 24px; align-items: start; text-align: left; }
+.compat-left { min-width: 0; }
+.compat-right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.compat-right--center { align-items: flex-start; justify-content: center; align-self: center; }
+.compat-panel-title { font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 2px; }
+.compat-check-row {
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.03);
+}
+.compat-check-row .compat-mic-meter { margin-top: 9px; }
+.compat-net-detail { margin-top: 6px; font-size: 11.5px; line-height: 1.4; color: var(--text-muted); }
+.compat-tip { font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+.compat-right .btn-primary { margin-top: 4px; }
+.compat-done-badge {
+  width: 44px; height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: rgba(16,185,129,0.15);
+  border: 1px solid rgba(16,185,129,0.4);
+  color: var(--green);
+}
+.compat-done-badge svg { width: 22px; height: 22px; }
+@media (max-width: 720px) { .compat-grid { grid-template-columns: 1fr; gap: 16px; } }
+.compat-net-warning { margin: 0; font-size: 11.5px; line-height: 1.5; color: #fca5a5; text-align: left; }
+.compat-net-warning a { color: var(--blue); text-decoration: underline; }
+.compat-status-pill.warn { background: rgba(239,68,68,0.15); color: var(--red); }
+.compat-mic-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.compat-mic-label svg { width: 15px; height: 15px; color: var(--blue); flex-shrink: 0; }
+.compat-status-pill {
+  margin-left: auto;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.08);
+  color: var(--text-muted);
+}
+.compat-status-pill.ok { background: rgba(16,185,129,0.15); color: var(--green); }
+.compat-mic-meter {
+  height: 8px;
+  border-radius: 99px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.compat-mic-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--gradient);
+  border-radius: 99px;
+  transition: width 0.08s linear;
+}
+
+.compat-camera-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+}
+.compat-camera-wrap video,
+.compat-camera-wrap img#compat-captured-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* mirror, like looking in a mirror while aligning */
+}
+
+/* Darkened surround with a bright oval cutout — pure CSS via an oversized
+   box-shadow on the oval shape itself, no SVG masking needed. */
+.compat-oval {
+  position: absolute;
+  left: 50%; top: 47%;
+  width: 40%; height: 84%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.5);
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.55);
+  transition: border-color 0.2s;
+  pointer-events: none;
+}
+.compat-oval.aligned { border-color: var(--green); box-shadow: 0 0 0 9999px rgba(0,0,0,0.55), 0 0 20px rgba(16,185,129,0.5); }
+
+.compat-face-status {
+  margin: 12px 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.compat-face-status--ok { color: var(--green); font-weight: 600; }
+
+.compat-captured-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+.compat-captured-actions .btn-secondary { flex: 1; text-align: center; }
+.compat-captured-actions .btn-primary { flex: 2; margin-top: 0; }
 .info-notice-highlight { color: var(--blue); font-weight: 700; }
 
 .hidden { display: none !important; }
@@ -1104,6 +1254,15 @@ input, select, textarea { font-family: inherit; }
 }
 .report-name { font-size: 26px; font-weight: 800; }
 .report-meta { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+
+.report-photo {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-bright);
+  flex-shrink: 0;
+}
 
 .rec-badge {
   font-size: 12px;

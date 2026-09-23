@@ -116,7 +116,16 @@
 
   function startTestAutomation() {
     console.log("[Test Automation] Starting automation loops...");
-    
+
+    // Skip straight past the instructions and system-check screens — this
+    // test drives the interview flow itself, not the pre-interview gating UI
+    // (scroll-to-agree, live camera/mic/face check), which needs a real
+    // camera and isn't meaningfully mockable here.
+    if (typeof App !== 'undefined') {
+      console.log("[Test Automation] Skipping instructions/compat screens, jumping to setup...");
+      App.showScreen('setup');
+    }
+
     // Step 1: Upload a mock resume file programmatically
     setTimeout(() => {
       console.log("[Test Automation] Preparing mock resume file for upload...");

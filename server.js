@@ -841,8 +841,18 @@ const RECORDINGS_DIR = path.join(
 );
 fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
+// Verification photo captured on the system compatibility check screen (see
+// public/app.js compatCapture/compatContinue) — one JPEG per candidate,
+// uploaded whole (not chunked like recordings) and linked to the report via
+// candidatePhotoId, same pattern as recordingId.
+const PHOTOS_DIR = path.join(
+  process.env.PERSISTENT_DATA_DIR ? path.resolve(process.env.PERSISTENT_DATA_DIR) : path.join(__dirname, 'data'),
+  'photos'
+);
+fs.mkdirSync(PHOTOS_DIR, { recursive: true });
+
 // Client-generated crypto.randomUUID() — validated strictly since it becomes
-// part of a filename.
+// part of a filename. Shared by recordings and candidate photos.
 const RECORDING_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RECORDING_EXTS = ['webm', 'mp4'];
 
@@ -957,6 +967,46 @@ app.get('/api/admin/recordings/:id', requireAdmin, (req, res) => {
   const file = findRecordingFile(id);
   if (!file) return res.status(404).json({ error: 'Recording not found' });
   res.sendFile(file); // sets video/webm or video/mp4 from the real extension, honors Range requests
+});
+
+// Connection check for the system compatibility screen. Measured against this
+// server (not a third-party speed-test host) because it's the path the interview
+// recording and API calls actually take. Capped so it can't be used to pull or
+// push large volumes of data.
+app.get('/api/speed-test', (req, res) => {
+  const bytes = Math.min(Math.max(parseInt(req.query.bytes, 10) || 0, 0), 4 * 1024 * 1024);
+  res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'application/octet-stream' });
+  res.send(crypto.randomBytes(bytes)); // random, so no transparent compression can shrink it
+});
+app.post('/api/speed-test', express.raw({ type: 'application/octet-stream', limit: '2mb' }), (req, res) => {
+  res.set('Cache-Control', 'no-store').json({ received: Buffer.isBuffer(req.body) ? req.body.length : 0 });
+});
+
+// Uploaded before the candidate even has a sessionId (captured on the system
+// compatibility check screen, ahead of the setup form) — so this is a plain
+// public endpoint like /api/parse-resume, not tied to an interview session.
+// The id is minted client-side and only ever linked to a report if /api/report
+// later confirms a file with that id actually exists (see safePhotoId there).
+app.post('/api/candidate-photo', (req, res) => {
+  const { id, imageBase64 } = req.body || {};
+  if (!RECORDING_ID_RE.test(String(id || ''))) return res.status(400).json({ error: 'Invalid photo id' });
+  const match = /^data:image\/jpeg;base64,(.+)$/.exec(imageBase64 || '');
+  if (!match) return res.status(400).json({ error: 'imageBase64 must be a JPEG data URL' });
+
+  const buffer = Buffer.from(match[1], 'base64');
+  const MAX_BYTES = 4 * 1024 * 1024;
+  if (buffer.length === 0 || buffer.length > MAX_BYTES) return res.status(400).json({ error: 'Photo too large or empty' });
+
+  fs.writeFileSync(path.join(PHOTOS_DIR, `${id}.jpg`), buffer);
+  res.json({ success: true });
+});
+
+app.get('/api/admin/candidate-photo/:id', requireAdmin, (req, res) => {
+  const id = String(req.params.id || '');
+  if (!RECORDING_ID_RE.test(id)) return res.status(400).json({ error: 'Invalid photo id' });
+  const file = path.join(PHOTOS_DIR, `${id}.jpg`);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'Photo not found' });
+  res.sendFile(file);
 });
 
 // ─── Problem-Solving Question Bank ────────────────────────────────────────────
@@ -1275,7 +1325,7 @@ const CATEGORY_WEIGHTS = {
 
 app.post('/api/report', async (req, res) => {
   try {
-    const { transcript, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null, chapters = null } = req.body;
+    const { transcript, teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, misconductCount = 0, endedForMisconduct = false, recordingId = null, candidatePhotoId = null, interrupted = false, stageIndex = 0, interruptedAt = null, sessionId = null, chapters = null } = req.body;
 
     // Client-reported video chapter markers (interview stage -> elapsed seconds in the
     // recording) — best-effort and only ever used to render seek links in the admin
@@ -1302,6 +1352,11 @@ app.post('/api/report', async (req, res) => {
       ? findRecordingFile(recordingId) : null;
     const safeRecordingId = recordingFile ? recordingId : null;
     const recordingExt = recordingFile ? path.extname(recordingFile).slice(1) : null;
+
+    // Same guard as recordings — only attach a photo id that actually exists
+    // on disk (see /api/candidate-photo above).
+    const safePhotoId = (typeof candidatePhotoId === 'string' && RECORDING_ID_RE.test(candidatePhotoId) && fs.existsSync(path.join(PHOTOS_DIR, `${candidatePhotoId}.jpg`)))
+      ? candidatePhotoId : null;
 
     // Fire-and-forget: fixes the recording's seek metadata in the background so
     // admins can scrub/jump anywhere in it (see remuxRecordingForSeeking above)
@@ -1459,7 +1514,7 @@ Respond ONLY in this exact JSON format (no markdown fences):
     const safePhone = typeof candidatePhone === 'string' ? candidatePhone.slice(0, 20) : null;
     const safeEmail = typeof candidateEmail === 'string' ? candidateEmail.slice(0, 200) : null;
 
-    const submissionId = store.saveReport({ sessionId, teacherName, candidatePhone: safePhone, candidateEmail: safeEmail, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, interrupted: !!interrupted, chapters: safeChapters });
+    const submissionId = store.saveReport({ sessionId, teacherName, candidatePhone: safePhone, candidateEmail: safeEmail, subject, problemScore, transcript, report: reportData, recordingId: safeRecordingId, recordingExt, candidatePhotoId: safePhotoId, interrupted: !!interrupted, chapters: safeChapters });
     console.log(`[/api/report] Saved report ${submissionId} for ${teacherName} (interrupted=${interrupted})`);
 
     // The report itself is never sent back to the candidate's browser — it's

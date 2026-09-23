@@ -441,7 +441,7 @@ const Admin = {
 
   renderReport(record) {
     const container = document.getElementById('report-container');
-    const { teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, chapters = [], report = {}, repeatAttempts = [] } = record;
+    const { teacherName, candidatePhone = null, candidateEmail = null, subject, problemScore, createdAt, transcript, recordingId = null, recordingExt = null, candidatePhotoId = null, chapters = [], report = {}, repeatAttempts = [] } = record;
     const { overallScore = 0, summary = '', recommendation = 'Recommended', categories = [], strengths = [], improvements = [], engagementNotes = null, conductFlagged = false, misconductCount = 0 } = report;
 
     const recStyle = getRecommendationStyle(recommendation);
@@ -488,6 +488,10 @@ const Admin = {
       </div>` : ''}
 
       <div class="report-hero">
+        ${candidatePhotoId ? `
+        <a href="/api/admin/candidate-photo/${encodeURIComponent(candidatePhotoId)}" target="_blank" rel="noopener">
+          <img class="report-photo" src="/api/admin/candidate-photo/${encodeURIComponent(candidatePhotoId)}" alt="${escapeHtml(teacherName)} — verification photo"/>
+        </a>` : ''}
         <div>
           <h2 class="report-name">${escapeHtml(teacherName)}</h2>
           <p class="report-meta">${escapeHtml(subject)} · ${date}</p>

@@ -179,12 +179,25 @@ const App = {
     cameraEnabled:   false,
     cameraStream:    null, // active MediaStream from getUserMedia, released once the interview ends
     cameraCaptureIntervalId: null,
-    streamId:        null // HR live stream ID for real-time monitoring
+    streamId:        null, // HR live stream ID for real-time monitoring
+    candidatePhotoId: null // uploaded id of the system-check verification photo, or null (see compat* methods)
   },
 
   // The AI bubble currently being revealed word-by-word in sync with speech:
   // { spans, revealed } or null (see renderAIMsg/_revealSpokenWords).
   _live: null,
+
+  // ── System Compatibility Check transient state (see compat* methods below) ──
+  _compatAudioCtx:     null,
+  _compatAnalyser:     null,
+  _compatMicRAF:       null,
+  _compatFaceApiReady: false,
+  _compatFaceLoopActive: false,
+  _compatFaceTimer:    null,
+  _compatPhotoDataUrl: null,
+  // Oval region as fractions of the video frame — must match .compat-oval's
+  // CSS position/size (top:47%/left:50%, width:40%/height:84% — see style.css).
+  _COMPAT_OVAL: { cx: 0.5, cy: 0.47, halfW: 0.20, halfH: 0.42 },
 
   get stage() { return STAGES[this.s.stageIndex]; },
 
@@ -209,6 +222,7 @@ const App = {
           misconductCount: this.s.misconductCount,
           endedForMisconduct: this.s.endedForMisconduct,
           recordingId: null,
+          candidatePhotoId: this.s.candidatePhotoId,
           interrupted: true,
           interruptedAt: this.s.stageIndex
         };
@@ -490,9 +504,11 @@ const App = {
   },
 
   // ── Camera Access (periodic engagement snapshots) ─────────────────────────
-  // Permission is requested here — triggered directly by the "Begin Interview"
-  // click, a user gesture — which surfaces the browser's own native camera
-  // permission prompt rather than any custom UI.
+  // Triggered by a user gesture — normally "Allow Camera & Microphone" on the
+  // system compatibility check screen (compatRequestAccess), with "Begin
+  // Interview" as a fallback for the rare case cameraEnabled is still false
+  // by then (e.g. the candidate reached screen-setup directly) — either way
+  // this surfaces the browser's own native permission prompt, never custom UI.
   async _requestCameraAccess() {
     try {
       // facingMode:'user' asks for the selfie camera specifically — phones/
@@ -569,6 +585,256 @@ const App = {
       default:
         return 'Camera access is required to start the interview. Please allow camera permission and try again.';
     }
+  },
+
+  // ── System Compatibility Check (screen-compat) ─────────────────────────────
+  // Requests camera/mic once here (reusing the same stream for the mic meter,
+  // the oval face check, and — via _requestCameraAccess's own state — the rest
+  // of the interview, so the candidate is never prompted for permission twice).
+  async compatRequestAccess() {
+    const btn    = document.getElementById('compat-allow-btn');
+    const errEl  = document.getElementById('compat-permission-error');
+    errEl.classList.add('hidden');
+    btn.disabled = true;
+    btn.querySelector('span').textContent = 'Requesting access…';
+
+    const granted = await this._requestCameraAccess();
+    if (!granted) {
+      btn.disabled = false;
+      btn.querySelector('span').textContent = 'Allow Camera & Microphone';
+      errEl.textContent = this._cameraErrorMessage();
+      errEl.classList.remove('hidden');
+      return;
+    }
+
+    document.getElementById('compat-permission-step').classList.add('hidden');
+    document.getElementById('compat-check-step').classList.remove('hidden');
+    document.getElementById('compat-video').srcObject = this.s.cameraStream;
+
+    this._compatStartMicMeter();
+    this._compatStartFaceLoop();
+    this.compatSpeedTest();
+  },
+
+  // Ping + download + upload against our own server. Informational only — a
+  // slow result warns but never blocks, and a failed test just shows
+  // "Unavailable" (never an error) so the candidate isn't stalled by the test.
+  async compatSpeedTest() {
+    const pill   = document.getElementById('compat-net-status');
+    const detail = document.getElementById('compat-net-detail');
+    const warn   = document.getElementById('compat-net-warning');
+    pill.className = 'compat-status-pill';
+    pill.textContent = 'Testing…';
+    detail.textContent = 'Measuring speed…';
+    warn.classList.add('hidden');
+
+    const timed = async (fn) => { const t = performance.now(); await fn(); return (performance.now() - t) / 1000; };
+    const noCache = { cache: 'no-store' };
+    try {
+      const pings = [];
+      for (let i = 0; i < 4; i++) {
+        pings.push(await timed(() => fetch(`/api/speed-test?bytes=0&t=${Date.now()}${i}`, noCache)));
+      }
+      const pingMs = Math.round(pings.sort((a, b) => a - b)[Math.floor(pings.length / 2)] * 1000);
+
+      const DOWN_BYTES = 1500000;
+      const downSec = await timed(async () => { await (await fetch(`/api/speed-test?bytes=${DOWN_BYTES}&t=${Date.now()}`, noCache)).arrayBuffer(); });
+      const downMbps = DOWN_BYTES * 8 / 1e6 / downSec;
+
+      const UP_BYTES = 400000;
+      const upBody = new Uint8Array(UP_BYTES);
+      crypto.getRandomValues(upBody.subarray(0, 65536)); // getRandomValues caps at 64KB per call
+      const upSec = await timed(async () => {
+        const r = await fetch('/api/speed-test', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: upBody, ...noCache });
+        if (!r.ok) throw new Error('upload test failed');
+      });
+      const upMbps = UP_BYTES * 8 / 1e6 / upSec;
+
+      detail.textContent = `↓ ${downMbps.toFixed(1)} Mbps · ↑ ${upMbps.toFixed(1)} Mbps · ${pingMs} ms`;
+      // The recording streams ~0.7 Mbps up for the whole interview, so upload
+      // is the limiting factor; thresholds leave headroom above that.
+      const poor = upMbps < 2 || downMbps < 4 || pingMs > 800;
+      pill.textContent = poor ? 'Slow' : '✓ Good';
+      pill.classList.add(poor ? 'warn' : 'ok');
+      warn.classList.toggle('hidden', !poor);
+    } catch (e) {
+      console.warn('Speed test unavailable (non-blocking):', e);
+      pill.textContent = 'Unavailable';
+      detail.textContent = 'Could not measure speed';
+    }
+  },
+
+  // Live volume meter — purely informational (never gates capture), but
+  // flips the pill to "Working" the first time it sees real signal, which is
+  // a more honest check than "permission granted" alone (a muted/dead mic
+  // still grants permission).
+  _compatStartMicMeter() {
+    this._compatStopMicMeter();
+    const track = this.s.cameraStream && this.s.cameraStream.getAudioTracks()[0];
+    if (!track) return;
+
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      this._compatAudioCtx = new Ctx();
+      const source = this._compatAudioCtx.createMediaStreamSource(new MediaStream([track]));
+      const analyser = this._compatAudioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      this._compatAnalyser = analyser;
+
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const bar  = document.getElementById('compat-mic-bar');
+      const pill = document.getElementById('compat-mic-status');
+
+      const tick = () => {
+        if (!this._compatAnalyser) return;
+        analyser.getByteTimeDomainData(data);
+        let sumSq = 0;
+        for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sumSq += v * v; }
+        const level = Math.min(1, Math.sqrt(sumSq / data.length) * 4); // rms, scaled for a visible swing
+        if (bar) bar.style.width = `${Math.round(level * 100)}%`;
+        if (level > 0.04 && pill && !pill.classList.contains('ok')) {
+          pill.textContent = '✓ Working';
+          pill.classList.add('ok');
+        }
+        this._compatMicRAF = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (e) {
+      console.warn('Mic meter unavailable (non-blocking):', e);
+    }
+  },
+
+  _compatStopMicMeter() {
+    if (this._compatMicRAF) cancelAnimationFrame(this._compatMicRAF);
+    this._compatMicRAF = null;
+    this._compatAnalyser = null;
+    if (this._compatAudioCtx) { this._compatAudioCtx.close().catch(() => {}); this._compatAudioCtx = null; }
+  },
+
+  async _compatLoadFaceApi() {
+    if (this._compatFaceApiReady) return true;
+    if (typeof faceapi === 'undefined') return false;
+    try {
+      await faceapi.nets.tinyFaceDetector.loadFromUri('models');
+      this._compatFaceApiReady = true;
+      return true;
+    } catch (e) {
+      console.warn('Face detection model failed to load (falling back to manual align):', e);
+      return false;
+    }
+  },
+
+  // Polls the live video for a face roughly centered/sized within the oval
+  // overlay and enables Capture only while one is found. If the model can't
+  // load at all (e.g. blocked script), degrades to a manual check — the
+  // candidate aligns visually and captures themselves — rather than ever
+  // trapping them on this screen.
+  async _compatStartFaceLoop() {
+    this._compatFaceLoopActive = true;
+    const video      = document.getElementById('compat-video');
+    const oval       = document.getElementById('compat-oval');
+    const statusEl   = document.getElementById('compat-face-status');
+    const captureBtn = document.getElementById('compat-capture-btn');
+
+    const ready = await this._compatLoadFaceApi();
+    if (!this._compatFaceLoopActive) return; // candidate left this screen while the model loaded
+
+    if (!ready) {
+      statusEl.textContent = 'Align your face within the oval, then capture.';
+      oval.classList.add('aligned');
+      captureBtn.disabled = false;
+      return;
+    }
+
+    statusEl.textContent = 'Align your face within the oval';
+    const opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+    const { cx, cy, halfW, halfH } = this._COMPAT_OVAL;
+
+    const tick = async () => {
+      if (!this._compatFaceLoopActive) return;
+      if (video.readyState < 2) {
+        this._compatFaceTimer = setTimeout(tick, 300);
+        return;
+      }
+      let aligned = false;
+      try {
+        const det = await faceapi.detectSingleFace(video, opts);
+        if (det) {
+          const vw = video.videoWidth, vh = video.videoHeight;
+          // The preview is mirrored (CSS scaleX(-1)) for a natural look, but
+          // detection runs on the raw, unmirrored frame — flip X to match.
+          const bcx = 1 - (det.box.x + det.box.width / 2) / vw;
+          const bcy = (det.box.y + det.box.height / 2) / vh;
+          const inOval  = ((bcx - cx) / halfW) ** 2 + ((bcy - cy) / halfH) ** 2 <= 1;
+          const sizeFrac = det.box.width / vw;
+          aligned = inOval && sizeFrac > 0.15 && sizeFrac < 0.6;
+        }
+      } catch (e) {
+        // A single failed detection tick is never fatal — just try again.
+      }
+      if (!this._compatFaceLoopActive) return;
+      oval.classList.toggle('aligned', aligned);
+      statusEl.textContent = aligned ? '✓ Face aligned — you can capture now' : 'Align your face within the oval';
+      statusEl.classList.toggle('compat-face-status--ok', aligned);
+      captureBtn.disabled = !aligned;
+      this._compatFaceTimer = setTimeout(tick, 350);
+    };
+    tick();
+  },
+
+  _compatStopFaceLoop() {
+    this._compatFaceLoopActive = false;
+    if (this._compatFaceTimer) clearTimeout(this._compatFaceTimer);
+    this._compatFaceTimer = null;
+  },
+
+  compatCapture() {
+    const video  = document.getElementById('compat-video');
+    const canvas = document.getElementById('compat-capture-canvas');
+    if (!video || !canvas || video.readyState < 2) return;
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height); // unmirrored — true orientation for an ID photo
+    this._compatPhotoDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+    this._compatStopFaceLoop();
+    document.getElementById('compat-check-step').classList.add('hidden');
+    document.getElementById('compat-captured-step').classList.remove('hidden');
+    document.getElementById('compat-captured-img').src = this._compatPhotoDataUrl;
+  },
+
+  compatRetake() {
+    this._compatPhotoDataUrl = null;
+    document.getElementById('compat-captured-step').classList.add('hidden');
+    document.getElementById('compat-check-step').classList.remove('hidden');
+    this._compatStartFaceLoop();
+  },
+
+  async compatContinue() {
+    const btn = document.getElementById('compat-continue-btn');
+    btn.disabled = true;
+    btn.querySelector('span').textContent = 'Uploading…';
+
+    // Best-effort, like every other diagnostic upload in this app (recording
+    // chunks, camera engagement snapshots) — a failed upload just means no
+    // photo on the report, never a blocked interview.
+    if (this._compatPhotoDataUrl) {
+      try {
+        const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const res = await fetch('/api/candidate-photo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, imageBase64: this._compatPhotoDataUrl })
+        });
+        if (res.ok) this.s.candidatePhotoId = id;
+      } catch (e) {
+        console.warn('Verification photo upload failed (non-blocking):', e);
+      }
+    }
+
+    this._compatStopMicMeter();
+    this.showScreen('setup');
   },
 
   // Grabs the current webcam frame as a JPEG data URL, or null if the camera
@@ -1510,6 +1776,7 @@ const App = {
         misconductCount: this.s.misconductCount,
         endedForMisconduct: this.s.endedForMisconduct,
         recordingId, // links the report to data/recordings/<id>.webm (or null)
+        candidatePhotoId: this.s.candidatePhotoId, // system-check verification photo, or null
         interrupted: interrupted ? true : false,
         interruptedAt: interrupted ? this.s.stageIndex : null
       };
