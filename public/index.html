@@ -24,10 +24,10 @@
 </div>
 
 <!-- ═════════════════════════════════════════════════════════════════════════
-     SCREEN 0 — DISCLAIMER
+     SCREEN 0 — INSTRUCTIONS
      ═════════════════════════════════════════════════════════════════════════ -->
 <div id="screen-disclaimer" class="screen active">
-  <div class="setup-card">
+  <div class="setup-card instructions-card">
 
     <!-- Eyebrow -->
     <div class="eyebrow-badge"><span class="eyebrow-dot"></span> AI-Powered Interview</div>
@@ -37,17 +37,70 @@
       <img src="logo.png" class="logo-icon" alt="V-Select logo"/>
       <span class="logo-text">V-Select</span>
     </div>
-    <p class="tagline">AI-Powered Talent Assessment & Selection Engine</p>
+    <p class="tagline">Please read the instructions below carefully before you begin</p>
 
-    <div class="info-notice">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <div>
-        <strong>Before You Begin</strong>
-        <p>It is advised to give this interview using a <span class="info-notice-highlight">laptop</span>. The interview requires camera/microphone access, fullscreen mode, and a stable connection — these work most reliably on a laptop rather than a mobile device or tablet.</p>
+    <div id="instructions-scroll-box" class="instructions-scroll-box">
+
+      <div class="instructions-group">
+        <h3>System & Browser</h3>
+        <ul>
+          <li>Use the latest version of <strong>Google Chrome</strong> for the best experience. Latest Microsoft Edge or Mozilla Firefox also work; Safari and older browser versions are not recommended.</li>
+          <li>Use a <strong>laptop</strong> — a desktop or mobile/tablet is not supported. The interview needs reliable camera/microphone access and fullscreen mode, which work most consistently on a laptop.</li>
+          <li>Make sure you have a stable, uninterrupted internet connection for the full duration of the interview.</li>
+        </ul>
       </div>
+
+      <div class="instructions-group">
+        <h3>Camera, Audio & Environment</h3>
+        <ul>
+          <li>Allow camera and microphone access when prompted — both are required to proceed.</li>
+          <li>Sit directly in front of the camera with your face clearly and fully visible at all times.</li>
+          <li>Make sure the lighting on your face is good — avoid strong backlight (e.g. a window or lamp behind you).</li>
+          <li>Use a plain, single-colour background — a plain white or blue wall is ideal. Avoid busy or cluttered backgrounds.</li>
+          <li>No other person should enter or be visible in the camera frame at any point during the interview.</li>
+          <li>Make sure the room is quiet with no background noise. Wired or noise-cancelling earphones are recommended.</li>
+        </ul>
+      </div>
+
+      <div class="instructions-group">
+        <h3>Conduct During the Interview</h3>
+        <ul>
+          <li>Be seated in one place for the entire interview — please don't get up or walk around mid-interview.</li>
+          <li>Keep your eyes on the laptop screen — avoid frequently looking away or reading from another device/paper.</li>
+          <li>Do not use any external help — books, notes, another device, or another person — while answering.</li>
+          <li>Speak clearly and answer in your own words.</li>
+        </ul>
+      </div>
+
+      <div class="instructions-group">
+        <h3>Screen & Session Rules</h3>
+        <ul>
+          <li>The interview must be taken in <strong>fullscreen mode</strong>. Exiting fullscreen may be flagged.</li>
+          <li>Do not switch tabs, minimize the window, or open other applications during the interview — this may be flagged and can lead to rejection.</li>
+          <li>Complete the interview in a <strong>single sitting</strong>. Do not close or refresh the browser once started.</li>
+        </ul>
+      </div>
+
+      <div class="instructions-group">
+        <h3>Proctoring & Integrity</h3>
+        <ul>
+          <li>This interview is <strong>AI-proctored</strong> — your video, audio, and on-screen activity are monitored throughout.</li>
+          <li>Any unethical practice, including impersonation, unauthorized assistance, or attempts to bypass proctoring, may lead to immediate <strong>disqualification</strong>.</li>
+          <li>By proceeding, you confirm that the responses given are entirely your own.</li>
+        </ul>
+      </div>
+
+      <div class="instructions-scroll-end" aria-hidden="true"></div>
     </div>
 
-    <button id="disclaimer-proceed-btn" class="btn-primary" onclick="App.showScreen('setup')">
+    <p id="instructions-scroll-hint" class="instructions-scroll-hint">Scroll down to read all instructions</p>
+
+    <label class="instructions-agree" id="instructions-agree-label">
+      <input type="checkbox" id="instructions-agree-checkbox" disabled/>
+      <span>I have read and understood the instructions above and agree to the terms and conditions.</span>
+    </label>
+
+    <button id="disclaimer-proceed-btn" class="btn-primary" onclick="App.showScreen('setup')" disabled>
       <span>OK, Proceed to Interview</span>
       <svg class="btn-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
     </button>

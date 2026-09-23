@@ -1914,3 +1914,27 @@ const App = {
     }
   }
 };
+
+// ── Instructions screen: must scroll to the end before agreeing, must agree
+// before proceeding. ────────────────────────────────────────────────────────
+(() => {
+  const box       = document.getElementById('instructions-scroll-box');
+  const hint      = document.getElementById('instructions-scroll-hint');
+  const checkbox  = document.getElementById('instructions-agree-checkbox');
+  const proceedBtn = document.getElementById('disclaimer-proceed-btn');
+  if (!box || !checkbox || !proceedBtn) return;
+
+  const onScroll = () => {
+    const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    if (atEnd) {
+      checkbox.disabled = false;
+      if (hint) hint.classList.add('hidden');
+    }
+  };
+  box.addEventListener('scroll', onScroll);
+  onScroll(); // covers instructions short enough to need no scrolling
+
+  checkbox.addEventListener('change', () => {
+    proceedBtn.disabled = !checkbox.checked;
+  });
+})();
