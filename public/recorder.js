@@ -46,6 +46,8 @@ const Recorder = {
   async requestScreen() {
     if (this.screenStream) return 'ok';
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return 'unsupported';
+    // Phones/tablets: never ask, even if the browser exposes the API — the interview must proceed untouched.
+    if (window.matchMedia && matchMedia('(pointer: coarse)').matches) return 'unsupported';
     try {
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 15, max: 15 } },
@@ -57,7 +59,8 @@ const Recorder = {
       return 'ok';
     } catch (e) {
       console.warn('Screen share not granted:', e);
-      return 'denied';
+      // Only a real refusal is 'denied' (worth a nudge); any other failure just means "can't", so carry on.
+      return e && e.name === 'NotAllowedError' ? 'denied' : 'unsupported';
     }
   },
 
