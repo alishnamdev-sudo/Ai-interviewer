@@ -38,9 +38,22 @@ const ReportManager = (() => {
     });
   }
 
+  // Proctoring tallies, summarised at the top of the transcript so reviewers
+  // (and the scoring model) see them without scanning every entry.
+  const proctor = { tabSwitches: 0, awayMs: 0, focusLosses: 0 };
+
+  function noteTabSwitch() { proctor.tabSwitches++; }
+  function noteReturn(ms) { proctor.awayMs += ms; }
+  function noteFocusLoss() { proctor.focusLosses++; }
+
+  function proctorSummary() {
+    if (!proctor.tabSwitches && !proctor.focusLosses) return '';
+    return `[Proctoring summary] Tab switches: ${proctor.tabSwitches} (total time away: ${Math.round(proctor.awayMs / 1000)}s) | Window focus lost: ${proctor.focusLosses}\n`;
+  }
+
   function getPlainTranscript() {
     let lastStage = '';
-    return entries.map(e => {
+    return proctorSummary() + entries.map(e => {
       let out = '';
       if (e.stage !== lastStage) {
         out += `\n=== ${e.stage.toUpperCase()} ===\n`;
@@ -51,5 +64,5 @@ const ReportManager = (() => {
     }).join('');
   }
 
-  return { addEntry, getPlainTranscript, markRecordingStart, markChapter, getChapters };
+  return { addEntry, getPlainTranscript, markRecordingStart, markChapter, getChapters, noteTabSwitch, noteReturn, noteFocusLoss };
 })();

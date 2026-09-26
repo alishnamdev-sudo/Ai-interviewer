@@ -544,17 +544,33 @@ const App = {
   },
 
   _setupTabSwitchingDetection() {
+    let hiddenAt = 0;
+    const label = () => STAGE_LABELS[this.stage] || 'Interview';
+
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && !this.s.quitting) {
+      if (this.s.quitting) return;
+      if (document.hidden) {
+        hiddenAt = Date.now();
+        ReportManager.noteTabSwitch();
         this.showToast('⚠️ Tab switching is not allowed during the interview. Please return to this tab.', 'warn');
-        this.addEntry('System', '[Candidate switched tabs — warning issued]', STAGE_LABELS[this.stage] || 'Interview');
+        this.addEntry('System', '[Candidate switched tabs — warning issued]', label());
+      } else if (hiddenAt) {
+        const ms = Date.now() - hiddenAt;
+        hiddenAt = 0;
+        ReportManager.noteReturn(ms);
+        this.addEntry('System', `[Candidate returned after ${Math.round(ms / 1000)}s away]`, label());
       }
     });
 
+    // A tab switch fires blur just before visibilitychange; wait a beat so it
+    // is only logged once (as a tab switch), and blur covers alt-tab to
+    // another app while this window stays visible.
     window.addEventListener('blur', () => {
-      if (!this.s.quitting) {
-        this.addEntry('System', '[Browser window lost focus]', STAGE_LABELS[this.stage] || 'Interview');
-      }
+      setTimeout(() => {
+        if (this.s.quitting || document.hidden) return;
+        ReportManager.noteFocusLoss();
+        this.addEntry('System', '[Browser window lost focus]', label());
+      }, 150);
     });
   },
 
