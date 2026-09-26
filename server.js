@@ -1497,6 +1497,9 @@ Respond ONLY in this exact JSON format (no markdown fences):
       }
       if (weightTotal > 0) {
         reportData.overallScore = Math.round((weightedSum / weightTotal) * 10) / 10;
+        // The model's own pick is independent of the recomputed score, so a
+        // higher score could land a worse label — derive it from the score.
+        reportData.recommendation = store.recommendationFor(reportData.overallScore, endedForMisconduct);
       }
     }
 

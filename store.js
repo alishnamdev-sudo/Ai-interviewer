@@ -27,6 +27,27 @@ if (!process.env.PERSISTENT_DATA_DIR) {
 
 const ID_RE = /^[0-9a-f-]+$/i;
 
+// Recommendation thresholds from EVALUATION_SYSTEM.md — the single source of
+// truth for the label, so it can never disagree with overallScore.
+function recommendationFor(score, conductFlagged) {
+  if (conductFlagged) return 'Not Recommended';
+  return score >= 80 ? 'Highly Recommended'
+    : score >= 60 ? 'Recommended'
+    : score >= 40 ? 'Needs Improvement'
+    : 'Not Recommended';
+}
+
+// Older reports stored the model's own label, which was never checked against
+// the computed score. Re-derive it on read so they display correctly too.
+// Fallback reports (generation failed, no categories) keep their label.
+function _fixRecommendation(record) {
+  const r = record?.report;
+  if (r && Array.isArray(r.categories) && r.categories.length && typeof r.overallScore === 'number') {
+    r.recommendation = recommendationFor(r.overallScore, r.conductFlagged);
+  }
+  return record;
+}
+
 // A single interview attempt can legitimately submit a report more than once
 // — most commonly the normal-completion beacon from generateReport() racing
 // the beforeunload safety-net beacon fired when the candidate closes the
@@ -79,7 +100,7 @@ function _loadSummaries() {
   return fs.readdirSync(DATA_DIR)
     .filter(f => f.endsWith('.json'))
     .map(f => {
-      const record = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8'));
+      const record = _fixRecommendation(JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), 'utf8')));
       return {
         id: record.id,
         createdAt: record.createdAt,
@@ -157,7 +178,7 @@ function getReport(id) {
   if (!ID_RE.test(id)) return null;
   const file = path.join(DATA_DIR, `${id}.json`);
   if (!fs.existsSync(file)) return null;
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  return _fixRecommendation(JSON.parse(fs.readFileSync(file, 'utf8')));
 }
 
 // Best-effort diagnostic trail for client-side failures that never become a
@@ -221,4 +242,4 @@ function deleteReport(id) {
   }
 }
 
-module.exports = { saveReport, listReports, getReport, deleteReport, getRepeatAttempts, logClientError, listClientErrors };
+module.exports = { recommendationFor, saveReport, listReports, getReport, deleteReport, getRepeatAttempts, logClientError, listClientErrors };
